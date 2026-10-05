@@ -41,7 +41,7 @@ function loadCommonJs(relativePath, mocks, platform = process.platform) {
             module,
             exports: module.exports,
             __dirname: path.dirname(filename),
-            process: { platform },
+            process: { platform, once() {} },
             console: { log() {}, warn() {}, error() {} },
         },
         { filename }
@@ -204,6 +204,7 @@ test('main IPC has one update handler, rejects other senders, and rolls back whe
     app.whenReady = () => Promise.resolve();
     app.setName = () => {};
     app.setAppUserModelId = () => {};
+    app.exit = () => {};
     const handlers = new Map();
     const ipcMain = {
         handle(channel, callback) {
@@ -225,6 +226,7 @@ test('main IPC has one update handler, rejects other senders, and rolls back whe
                 createWindow: () => window,
                 getKeybindStatus: () => ({ keybinds: current }),
                 setShortcutsPaused: () => ({ success: true }),
+                disposeGlobalShortcuts: () => cleanup.push('shortcuts'),
                 updateGlobalShortcuts(input) {
                     current = normalizeKeybinds(input);
                     changes.push(current);

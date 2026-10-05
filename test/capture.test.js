@@ -383,6 +383,43 @@ test('repeated screenshot presses issue one request and provider completion rele
     harness.api.stopCapture();
 });
 
+test('requesting a new screenshot while viewing history follows the latest answer before streaming starts', async () => {
+    const environment = makeScreenshotEnvironment();
+    let harness;
+    let sent = false;
+    harness = screenshotHarness(environment, channel => {
+        if (channel === 'send-image-content') {
+            sent = true;
+            assert.equal(harness.app.currentResponseIndex, 1);
+        }
+    });
+    harness.app.responses = ['Earlier answer', 'Most recent answer'];
+    harness.app.currentResponseIndex = 0;
+    await harness.api.startCapture(5, 'medium', true);
+    assert.equal(await harness.screenshot(), true);
+    assert.equal(sent, true);
+    harness.api.stopCapture();
+});
+
+test('a main-process screenshot skipped during session handoff is not presented as a completed answer', async () => {
+    for (const code of ['busy', 'cancelled']) {
+        const environment = makeScreenshotEnvironment();
+        let skipped = true;
+        const harness = screenshotHarness(environment, channel => {
+            if (channel === 'send-image-content' && skipped) return { success: true, skipped: true, code };
+        });
+        await harness.api.startCapture(5, 'medium', true);
+        assert.equal(await harness.screenshot(), false);
+        assert.notEqual(harness.app.status, 'Screen ready');
+        assert.match(harness.app.status, code === 'busy' ? /previous request is finishing/ : /canceled/);
+        assert.equal(harness.app.responses.length, 0);
+        skipped = false;
+        assert.equal(await harness.screenshot(), true);
+        assert.equal(harness.app.status, 'Screen ready');
+        harness.api.stopCapture();
+    }
+});
+
 test('provider rejection reports an actionable screenshot error and permits retry', async () => {
     const environment = makeScreenshotEnvironment();
     let failed = true;

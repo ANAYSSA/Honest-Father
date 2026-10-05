@@ -118,6 +118,7 @@ function createShortcutRegistrar(globalShortcut, platform = process.platform) {
     let desired = new Map();
     let configured = null;
     let paused = false;
+    let disposed = false;
     let lastResult = { success: true, keybinds: getDefaultKeybinds(platform), failures: [] };
 
     function register(bindings) {
@@ -136,6 +137,7 @@ function createShortcutRegistrar(globalShortcut, platform = process.platform) {
     }
 
     function update(input, actions, { allowPartial = false } = {}) {
+        if (disposed) return { success: false, error: 'Application is closing.', keybinds: configured || getDefaultKeybinds(platform), failures: [] };
         let keybinds;
         try {
             keybinds = normalizeKeybinds(input, platform);
@@ -169,6 +171,7 @@ function createShortcutRegistrar(globalShortcut, platform = process.platform) {
     }
 
     function setPaused(value) {
+        if (disposed) return { ...lastResult, success: false, error: 'Application is closing.' };
         paused = value;
         globalShortcut.unregisterAll();
         if (!paused) {
@@ -179,7 +182,14 @@ function createShortcutRegistrar(globalShortcut, platform = process.platform) {
         return lastResult;
     }
 
-    return { update, setPaused, getStatus: () => lastResult };
+    function dispose() {
+        disposed = true;
+        active.clear();
+        desired.clear();
+        globalShortcut.unregisterAll();
+    }
+
+    return { update, setPaused, dispose, getStatus: () => lastResult };
 }
 
 module.exports = { ACTION_NAMES, getDefaultKeybinds, normalizeAccelerator, normalizeKeybinds, createShortcutRegistrar };

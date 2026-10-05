@@ -1,7 +1,7 @@
 {
     "name": "honest-father",
     "productName": "Honest Father",
-    "version": "0.9.1",
+    "version": "0.9.2",
     "description": "AI assistant for mock interviews, exam preparation, and learning",
     "main": "src/index.js",
     "scripts": {
@@ -12,7 +12,7 @@
         "lint": "echo \"No linting configured\"",
         "test": "node --test",
         "build:audio": "node scripts/build-audio-helper.js",
-        "test:smoke": "electron scripts/smoke.js"
+        "test:smoke": "node scripts/run-smoke.js"
     },
     "keywords": [
         "honest-father",

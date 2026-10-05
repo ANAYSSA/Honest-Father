@@ -913,7 +913,7 @@ export class MainView extends LitElement {
         const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
         if ((isMac ? e.metaKey : e.ctrlKey) && e.key === 'Enter') {
             e.preventDefault();
-            this._handleStart();
+            cheatingDaddy.handleShortcut(isMac ? 'cmd+enter' : 'ctrl+enter');
         }
     }
 

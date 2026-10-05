@@ -2,7 +2,7 @@ const { GoogleGenAI, Modality } = require('@google/genai');
 const { BrowserWindow, ipcMain } = require('electron');
 const { spawn } = require('child_process');
 const { saveDebugAudio } = require('../audioUtils');
-const { getSystemPrompt } = require('./prompts');
+const { getSystemPrompt, getScreenshotSystemPrompt } = require('./prompts');
 const { getAvailableModel, incrementLimitCount, getApiKey, getGroqApiKey, incrementCharUsage, getConfig, getPreferences } = require('../storage');
 const { connectCloud, sendCloudAudio, sendCloudText, sendCloudImage, closeCloud, isCloudActive, setOnTurnComplete } = require('./cloud');
 const { startTransportLog, logTransportEvent, closeTransportLog } = require('./transportLogger');
@@ -491,7 +491,7 @@ async function sendImageToGroq(base64Data, prompt) {
             body: JSON.stringify({
                 model,
                 messages: [
-                    { role: 'system', content: currentSystemPrompt || 'You are a helpful assistant.' },
+                    { role: 'system', content: getScreenshotSystemPrompt(currentProfile || 'interview', currentCustomPrompt || '') },
                     {
                         role: 'user',
                         content: [
@@ -1184,7 +1184,11 @@ async function sendImageToGeminiHttp(base64Data, prompt) {
         const response = await ai.models.generateContentStream({
             model: model,
             contents: contents,
-            config: { maxOutputTokens: 4096, systemInstruction: currentSystemPrompt || getSystemPrompt('interview'), abortSignal: controller.signal },
+            config: {
+                maxOutputTokens: 4096,
+                systemInstruction: getScreenshotSystemPrompt(currentProfile || 'interview', currentCustomPrompt || ''),
+                abortSignal: controller.signal,
+            },
         });
         if (!isCurrent()) return { success: true, skipped: true, code: 'cancelled' };
 
@@ -1255,7 +1259,7 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
         if (currentProviderMode === 'cloud') closeCloud();
         currentProviderMode = 'byok';
         initializeNewSession(profile, customPrompt);
-        currentSystemPrompt = getSystemPrompt(profile, customPrompt);
+        currentSystemPrompt = getScreenshotSystemPrompt(profile, customPrompt);
         sendToRenderer('update-status', 'Screen ready');
         return true;
     });

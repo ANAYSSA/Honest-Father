@@ -407,10 +407,24 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false, prom
         if (!base64data || base64data.length < 100) throw new Error('The screenshot contains no usable image. Share your screen again.');
 
         const payload = { data: base64data };
-        if (isManual) payload.prompt = prompt || MANUAL_SCREENSHOT_PROMPT;
+        if (isManual) {
+            payload.prompt = prompt || MANUAL_SCREENSHOT_PROMPT;
+            // A requested answer should appear immediately even while browsing older responses.
+            const app = cheatingDaddy.element();
+            app.currentResponseIndex = app.responses.length - 1;
+            app.requestUpdate?.();
+        }
         cheatingDaddy.setStatus('Waiting for AI response...');
         const result = await ipcRenderer.invoke('send-image-content', payload);
         if (!isCurrent()) return false;
+        if (result.skipped) {
+            cheatingDaddy.setStatus(
+                result.code === 'busy'
+                    ? 'A previous request is finishing. Try the shortcut again shortly.'
+                    : 'Screenshot request was canceled. Try the shortcut again.'
+            );
+            return false;
+        }
         if (!result.success) throw new Error(result.error || 'The AI provider could not answer. Try again.');
         cheatingDaddy.setStatus(captureScreenOnly ? 'Screen ready' : 'Listening...');
         console.log(`Screenshot response completed (${width}x${height})`);

@@ -119,7 +119,7 @@ function harness({
             },
         },
         '../audioUtils': { saveDebugAudio: () => {} },
-        './prompts': { getSystemPrompt: (profile, custom = '') => `Practice ${profile}. ${custom}` },
+        './prompts': require('../src/utils/prompts'),
         '../storage': {
             getAvailableModel: () => 'gemini-3.1-flash-lite',
             incrementLimitCount: () => {},
@@ -288,8 +288,62 @@ test('screen-only session and streamed screenshots never initialize Live or nati
     assert.equal(h.clients[0].httpOptions.timeout, 45000);
     assert.equal(h.clients[0].httpOptions.retryOptions.attempts, 1);
     assert.match(h.requests[0].config.systemInstruction, /Explain concisely/);
+    assert.match(h.requests[0].config.systemInstruction, /exam preparation/);
+    assert.match(h.requests[0].config.systemInstruction, /complete runnable implementation/);
+    assert.doesNotMatch(h.requests[0].config.systemInstruction, /exact words to say|sentences max|No coaching|no explanations/);
     assert.equal(h.events.filter(event => event.channel === 'new-response')[0].data, 'The answer is 42.');
     await h.invoke('close-session');
+});
+
+test('Gemini screenshots during a Live interview use a coding-capable instruction while retaining custom context', async () => {
+    const custom = 'Use TypeScript for data structure exercises.';
+    const h = harness();
+    await h.invoke('initialize-gemini', 'unit-test-key', custom, 'interview');
+    assert.match(h.connections[0].config.systemInstruction.parts[0].text, /exact words to say/);
+    const image = { data: Buffer.alloc(1600).toString('base64'), prompt: 'Solve the displayed coding exercise.' };
+    assert.equal((await h.invoke('send-image-content', image)).success, true);
+    const system = h.requests[0].config.systemInstruction;
+    assert.match(system, /mock interview practice/);
+    assert.match(system, /complete runnable implementation/);
+    assert.match(system, /time and space complexity/);
+    assert.ok(system.includes(custom));
+    assert.doesNotMatch(system, /exact words to say|sentences max|No coaching|no explanations/);
+    h.api.closeActiveSession();
+});
+
+test('Groq screenshots receive the same answer-first instruction and custom study context', async () => {
+    let body;
+    let done = false;
+    const h = harness({
+        groqKey: 'unit-test-groq',
+        fetch: async (url, options) => {
+            body = JSON.parse(options.body);
+            return {
+                ok: true,
+                status: 200,
+                body: {
+                    getReader: () => ({
+                        read: async () => {
+                            if (done) return { done: true };
+                            done = true;
+                            return { done: false, value: Buffer.from(`data: ${JSON.stringify({ choices: [{ delta: { content: 'B. 42' } }] })}\n\n`) };
+                        },
+                    }),
+                },
+            };
+        },
+    });
+    const custom = 'Course: algorithms. Show the final answer first.';
+    await h.invoke('initialize-screen-session', 'exam', custom);
+    const result = await h.invoke('send-image-content', { data: Buffer.alloc(1600).toString('base64'), prompt: 'Answer the practice question.' });
+    assert.equal(result.success, true);
+    const system = body.messages[0].content;
+    assert.equal(body.messages[0].role, 'system');
+    assert.match(system, /exam preparation/);
+    assert.match(system, /Put the answer or solution first/);
+    assert.match(system, /complete runnable implementation/);
+    assert.ok(system.includes(custom));
+    assert.doesNotMatch(system, /exact words to say|sentences max|No coaching|no explanations/);
 });
 
 test('screen quota failure pauses follow-up calls without opening Live or hiding provider error', async () => {

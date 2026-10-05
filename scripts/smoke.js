@@ -1,20 +1,23 @@
 // Launch the real Electron app with isolated storage and verify its rendered UI.
 const { app, BrowserWindow } = require('electron');
-const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const assert = require('node:assert/strict');
-const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'honest-father-smoke-'));
+const temporary = process.env.HONEST_FATHER_SMOKE_HOME;
+assert.ok(temporary, 'Run this test through npm run test:smoke');
 os.homedir = () => temporary;
 app.setPath('userData', path.join(temporary, 'electron'));
 const timeout = setTimeout(() => {
     console.error('Smoke test timed out.');
     app.exit(1);
 }, 30000);
-app.on('will-quit', () => {
+app.on('before-quit', () => console.log('Smoke lifecycle: before-quit'));
+app.on('will-quit', () => console.log('Smoke lifecycle: will-quit'));
+app.on('quit', (_event, code) => console.log('Smoke lifecycle: quit', code));
+process.on('exit', code => {
     clearTimeout(timeout);
+    console.log('Smoke lifecycle: process exit', code);
 });
-process.on('exit', () => fs.rmSync(temporary, { recursive: true, force: true }));
 require('../src/index.js');
 app.whenReady().then(async () => {
     try {
@@ -91,7 +94,6 @@ app.whenReady().then(async () => {
     } catch (error) {
         console.error(error);
         clearTimeout(timeout);
-        fs.rmSync(temporary, { recursive: true, force: true });
         app.exit(1);
     }
 });

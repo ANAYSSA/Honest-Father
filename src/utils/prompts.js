@@ -219,7 +219,34 @@ function getSystemPrompt(profile, customPrompt = '', googleSearchEnabled = true)
     return buildSystemPrompt(promptParts, customPrompt, googleSearchEnabled);
 }
 
+function getScreenshotSystemPrompt(profile = 'interview', customPrompt = '') {
+    const contexts = {
+        interview: 'mock interview practice',
+        exam: 'exam preparation and study exercises',
+        sales: 'sales practice and business questions',
+        meeting: 'meeting preparation and document review',
+        presentation: 'presentation practice and slide analysis',
+        negotiation: 'negotiation practice and business scenarios',
+    };
+    const context = contexts[profile] || 'learning and practice';
+    return `You are Honest Father's practice assistant for ${context}. Solve the question or task visible in the screenshot, using the user's request and provided context.
+
+**OUTPUT REQUIREMENTS:**
+- Put the answer or solution first, then give a brief explanation.
+- For coding exercises, provide a complete runnable implementation in a fenced code block. Use the requested language or the language shown in the question. Include all required functions and respect the visible constraints. Then briefly explain the approach and time and space complexity. Use the length needed for complete code.
+- For multiple-choice questions, start with the correct option label and answer, followed by a brief justification.
+- For mathematics and other exercises, start with the result and include the essential steps needed to understand it.
+- Use Markdown for clear formatting. Focus on the visible question and keep the explanation concise.
+- If essential text, code, answer choices, or constraints are unreadable or missing, identify exactly what is needed before solving.
+
+User-provided context
+-----
+${customPrompt}
+-----`;
+}
+
 module.exports = {
     profilePrompts,
     getSystemPrompt,
+    getScreenshotSystemPrompt,
 };

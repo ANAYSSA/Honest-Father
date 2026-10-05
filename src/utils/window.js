@@ -156,6 +156,10 @@ function getKeybindStatus() {
     return shortcutRegistrar.getStatus();
 }
 
+function disposeGlobalShortcuts() {
+    shortcutRegistrar.dispose();
+}
+
 function setupWindowIpcHandlers(mainWindow) {
     const onViewChanged = (event, view) => {
         if (event.sender !== mainWindow.webContents) return;
@@ -214,5 +218,6 @@ module.exports = {
     updateGlobalShortcuts,
     setShortcutsPaused,
     getKeybindStatus,
+    disposeGlobalShortcuts,
     setupWindowIpcHandlers,
 };

@@ -3,10 +3,10 @@ if (require('electron-squirrel-startup')) {
 }
 
 const { app, BrowserWindow, shell, ipcMain, globalShortcut } = require('electron');
-const { createWindow, updateGlobalShortcuts, setShortcutsPaused, getKeybindStatus } = require('./utils/window');
+const { createWindow, updateGlobalShortcuts, setShortcutsPaused, getKeybindStatus, disposeGlobalShortcuts } = require('./utils/window');
 const { setupGeminiIpcHandlers, stopMacOSAudioCapture, sendToRenderer, closeActiveSession } = require('./utils/gemini');
 const { normalizeKeybinds } = require('./utils/keybinds');
-const { createShutdownHandler } = require('./utils/shutdown');
+const { createShutdownHandler, createQuitController } = require('./utils/shutdown');
 const storage = require('./storage');
 
 app.setName('Honest Father');
@@ -17,8 +17,10 @@ const shutdown = createShutdownHandler({
     closeActiveSession: () => closeActiveSession(geminiSessionRef),
     stopAudioCapture: stopMacOSAudioCapture,
     closeLocalSession: () => require('./utils/localai').closeLocalSession(),
-    unregisterShortcuts: () => globalShortcut.unregisterAll(),
+    unregisterShortcuts: disposeGlobalShortcuts,
 });
+const quitController = createQuitController({ shutdown, exit: code => app.exit(code) });
+process.once('exit', quitController.processExited);
 
 function createMainWindow() {
     mainWindow = createWindow(sendToRenderer, geminiSessionRef);
@@ -26,6 +28,7 @@ function createMainWindow() {
 }
 
 app.whenReady().then(async () => {
+    if (quitController.isQuitting()) return;
     // Initialize storage (checks version, resets if needed)
     storage.initializeStorage();
 
@@ -37,15 +40,16 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
     stopMacOSAudioCapture();
-    if (process.platform !== 'darwin') {
+    if (process.platform !== 'darwin' && !quitController.isQuitting()) {
         app.quit();
     }
 });
 
-app.on('before-quit', shutdown);
+app.on('before-quit', quitController.beginQuit);
 app.on('will-quit', () => globalShortcut.unregisterAll());
 
 app.on('activate', () => {
+    if (quitController.isQuitting()) return;
     if (BrowserWindow.getAllWindows().length === 0) {
         createMainWindow();
     }
@@ -287,7 +291,8 @@ function setupGeneralIpcHandlers() {
         }
     });
 
-    const isMainWindowSender = event => mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents;
+    const isMainWindowSender = event =>
+        !quitController.isQuitting() && mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents;
 
     ipcMain.handle('update-keybinds', (event, newKeybinds) => {
         if (!isMainWindowSender(event)) return { success: false, error: 'Invalid shortcut request.' };
