@@ -23,7 +23,16 @@ const quitController = createQuitController({ shutdown, exit: code => app.exit(c
 process.once('exit', quitController.processExited);
 
 function createMainWindow() {
+    if (process.platform === 'darwin') app.setActivationPolicy('accessory');
     mainWindow = createWindow(sendToRenderer, geminiSessionRef);
+    if (process.platform === 'darwin') {
+        app.dock.hide();
+        const createdWindow = mainWindow;
+        createdWindow.webContents.once('did-finish-load', () => {
+            // macOS can restore regular activation during launch, after the first window was created.
+            if (!quitController.isQuitting() && !createdWindow.isDestroyed()) app.setActivationPolicy('accessory');
+        });
+    }
     return mainWindow;
 }
 

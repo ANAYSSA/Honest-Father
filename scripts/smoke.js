@@ -27,6 +27,17 @@ app.whenReady().then(async () => {
         if (window.webContents.isLoadingMainFrame()) {
             await new Promise(resolve => window.webContents.once('did-finish-load', resolve));
         }
+        if (process.platform === 'darwin') {
+            for (let attempt = 0; attempt < 100 && app.dock.isVisible(); attempt++) {
+                await new Promise(resolve => setTimeout(resolve, 20));
+            }
+            assert.equal(window.isVisible(), true, 'Hiding the Dock keeps the startup window visible');
+            assert.equal(app.dock.isVisible(), false, 'macOS Dock icon stays hidden while the window is open');
+            window.hide();
+            window.showInactive();
+            assert.equal(window.isVisible(), true, 'The window can still be shown without a Dock icon');
+            assert.equal(app.dock.isVisible(), false, 'Showing the window does not restore its Dock icon');
+        }
         const errors = [];
         window.webContents.on('console-message', (...args) => {
             const message = args[1]?.message || args[2];

@@ -2,6 +2,7 @@ const { app, BrowserWindow, globalShortcut, ipcMain, screen } = require('electro
 const path = require('node:path');
 const storage = require('../storage');
 const { getDefaultKeybinds, createShortcutRegistrar } = require('./keybinds');
+const { registerAutomaticScreenCapture } = require('./screenCapture');
 const shortcutRegistrar = createShortcutRegistrar(globalShortcut, process.platform);
 
 let mouseEventsIgnored = false;
@@ -35,22 +36,7 @@ function createWindow(sendToRenderer, geminiSessionRef) {
     });
 
     const { session, desktopCapturer } = require('electron');
-    session.defaultSession.setDisplayMediaRequestHandler(
-        (request, callback) => {
-            desktopCapturer
-                .getSources({ types: ['screen'] })
-                .then(sources => {
-                    const primaryId = String(screen.getPrimaryDisplay().id);
-                    const source = sources.find(item => item.display_id === primaryId) || sources[0];
-                    callback(source ? { video: source, audio: 'loopback' } : {});
-                })
-                .catch(error => {
-                    console.warn('Screen sharing could not start:', error.message);
-                    callback({});
-                });
-        },
-        { useSystemPicker: true }
-    );
+    registerAutomaticScreenCapture(session.defaultSession, { desktopCapturer, screen, mainWindow });
 
     mainWindow.setContentProtection(true);
     if (process.platform === 'win32') {

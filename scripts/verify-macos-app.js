@@ -12,6 +12,7 @@ function verifyMacApp(appPath) {
         CFBundleIdentifier: 'com.anayssa.honestfather',
         CFBundleDisplayName: 'Honest Father',
         CFBundleExecutable: 'Honest Father',
+        LSUIElement: 'true',
     })) {
         const actual = execFileSync('/usr/libexec/PlistBuddy', ['-c', `Print :${key}`, plistPath], { encoding: 'utf8' }).trim();
         assert.equal(actual, expected, `Unexpected packaged ${key}`);

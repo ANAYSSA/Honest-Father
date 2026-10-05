@@ -16,12 +16,13 @@ module.exports = {
         extendInfo: {
             CFBundleDisplayName: 'Honest Father',
             CFBundleName: 'Honest Father',
+            LSUIElement: true,
             NSMicrophoneUsageDescription: 'Honest Father uses your microphone for interview practice and study sessions.',
             NSScreenCaptureUsageDescription: 'Honest Father captures shared screens and system audio to help you review practice questions.',
             NSAudioCaptureUsageDescription: 'Honest Father uses system audio during interview practice and study sessions.',
             LSMinimumSystemVersion: '13.0',
         },
-        ignore: [/^\/native(?:\/|$)/, /^\/scripts(?:\/|$)/, /^\/test(?:\/|$)/, /^\/work(?:\/|$)/, /^\/\.github(?:\/|$)/],
+        ignore: [/^\/native(?:\/|$)/, /^\/scripts(?:\/|$)/, /^\/tests?(?:\/|$)/, /^\/work(?:\/|$)/, /^\/\.github(?:\/|$)/],
         // Re-sign the final bundle after plist/ASAR/fuse changes. '-' needs no certificate;
         // Developer ID signing and notarization remain separate distribution steps.
         osxSign: {

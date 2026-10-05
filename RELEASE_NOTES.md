@@ -1,5 +1,7 @@
 Honest Father is an open-source assistant for mock interviews, exam preparation, and learning, forked from Cheating Daddy.
 
+- Restored automatic display capture without the macOS system screen picker. macOS Screen Recording permission is still required.
+- macOS builds run without a Dock icon, including during startup, while preserving window visibility and keyboard shortcuts.
 - The API-mode heading now reads Honest Father ANAYSSA.
 - Updated Gemini Live integration, clearer API errors, bounded retries, and session recovery.
 - Configurable Live and screenshot models, with project quota errors reported accurately.

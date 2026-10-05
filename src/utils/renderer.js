@@ -219,19 +219,29 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
         const captureSystem = !screenOnly && audioMode !== 'mic_only';
         const captureMic = !screenOnly && (audioMode === 'mic_only' || audioMode === 'both');
 
-        const stream = await navigator.mediaDevices.getDisplayMedia({
-            video: { frameRate: 1, width: { ideal: 2560 }, height: { ideal: 1600 } },
-            audio:
-                captureSystem && !isMacOS
-                    ? {
-                          sampleRate: SAMPLE_RATE,
-                          channelCount: 1,
-                          echoCancellation: false,
-                          noiseSuppression: false,
-                          autoGainControl: false,
-                      }
-                    : false,
-        });
+        let stream;
+        try {
+            stream = await navigator.mediaDevices.getDisplayMedia({
+                video: { frameRate: 1, width: { ideal: 2560 }, height: { ideal: 1600 } },
+                audio:
+                    captureSystem && !isMacOS
+                        ? {
+                              sampleRate: SAMPLE_RATE,
+                              channelCount: 1,
+                              echoCancellation: false,
+                              noiseSuppression: false,
+                              autoGainControl: false,
+                          }
+                        : false,
+            });
+        } catch (error) {
+            if (isMacOS && ['NotAllowedError', 'PermissionDeniedError'].includes(error.name)) {
+                throw new Error(
+                    'Allow Honest Father in System Settings > Privacy & Security > Screen & System Audio Recording, then restart the app.'
+                );
+            }
+            throw error;
+        }
         if (generation !== captureGeneration) {
             stream.getTracks().forEach(track => track.stop());
             return false;

@@ -132,6 +132,28 @@ test('microphone only on macOS skips native system capture and releases every re
     assert.equal(harness.contexts[0].closed, true);
 });
 
+test('macOS Screen Recording denial explains the real OS permission and does not start audio', async () => {
+    const harness = loadRenderer({
+        mediaDevices: {
+            async getDisplayMedia() {
+                const error = new Error('Permission denied');
+                error.name = 'NotAllowedError';
+                throw error;
+            },
+            async getUserMedia() {
+                assert.fail('Microphone capture must not start after screen permission denial');
+            },
+        },
+    });
+    assert.equal(await harness.api.startCapture(), false);
+    assert.match(harness.app.status, /System Settings > Privacy & Security > Screen & System Audio Recording/);
+    assert.equal(
+        harness.calls.some(call => call.channel === 'start-macos-audio'),
+        false
+    );
+    assert.equal(harness.contexts.length, 0);
+});
+
 test('Windows dual capture closes both streams and both audio contexts after provider failure', async () => {
     const screen = makeStream(true);
     const mic = makeStream(true);
@@ -167,13 +189,16 @@ test('denied microphone permission rolls back the screen stream', async () => {
                 return screen;
             },
             async getUserMedia() {
-                throw new Error('Permission denied');
+                const error = new Error('Permission denied');
+                error.name = 'NotAllowedError';
+                throw error;
             },
         },
     });
     assert.equal(await harness.api.startCapture(), false);
     assert.equal(screen.videoTrack.stopped, true);
     assert.match(harness.app.status, /Permission denied/);
+    assert.doesNotMatch(harness.app.status, /Screen & System Audio Recording/);
 });
 
 test('ending session while permission prompt is pending prevents late capture startup', async () => {

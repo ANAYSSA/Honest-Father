@@ -17,7 +17,10 @@ Requires macOS 13 or later, or 64-bit Windows 10/11.
 
 macOS builds have an ad hoc signature verified after packaging. They are not Developer ID signed or notarized, so macOS may require approval under **System Settings → Privacy & Security**. Windows builds are unsigned and may show SmartScreen. Each platform includes a `SHA256SUMS.txt` file for verifying downloads. Linux packaging is outside the scope of this fork's release workflow.
 
-## What changed in 0.9.4
+## What changed in 0.9.5
+
+- Screen capture selects a display automatically without the macOS system screen picker.
+- The macOS application stays out of the Dock, including during startup. Show/hide and Quit keyboard shortcuts remain available.
 
 - Renamed the app, installers, settings directory, help links, and update checks to **Honest Father**.
 - Updated the Google GenAI SDK and Gemini Live setup. The default Live model is `gemini-3.8-live`, and the screenshot model is `gemini-3.1-flash-lite`; both can be changed in the app.
