@@ -1358,7 +1358,7 @@ export class MainView extends LitElement {
                                   <button class="help-btn" @click=${this._openLocalHelp} aria-label="Open Local AI help">${helpIcon}</button>
                               </div>
                           `
-                        : html` <div class="page-title">${html`Honest Father <span class="mode-suffix">BYOK</span>`}</div> `
+                        : html` <div class="page-title">${html`Honest Father <span class="mode-suffix">ANAYSSA</span>`}</div> `
                 }
                 <div class="page-subtitle">${this._mode === 'byok' ? 'Bring your own API keys' : 'Run models locally on your machine'}</div>
 

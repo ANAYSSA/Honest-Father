@@ -1,5 +1,6 @@
 Honest Father is an open-source assistant for mock interviews, exam preparation, and learning, forked from Cheating Daddy.
 
+- The API-mode heading now reads Honest Father ANAYSSA.
 - Updated Gemini Live integration, clearer API errors, bounded retries, and session recovery.
 - Configurable Live and screenshot models, with project quota errors reported accurately.
 - Command+Enter on macOS or Ctrl+Enter on Windows starts a screen-only session from Home and immediately analyzes a screenshot. Repeated presses analyze the next screenshot without a Live/audio connection. Start Session remains available for audio and Live sessions.
