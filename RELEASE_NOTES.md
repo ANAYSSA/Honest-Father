@@ -1,3 +1,9 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ANAYSSA/Honest-Father/8732eb477a24aa01cc789ac0df77f20a94a19433/src/assets/logo.png" alt="Honest Father" width="160" height="160" />
+</p>
+
+<h1 align="center">Honest Father</h1>
+
 Honest Father is an open-source assistant for mock interviews, exam preparation, and learning, forked from Cheating Daddy.
 
 - Restored automatic display capture without the macOS system screen picker. macOS Screen Recording permission is still required.

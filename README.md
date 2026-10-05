@@ -1,4 +1,8 @@
-# Honest Father
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ANAYSSA/Honest-Father/8732eb477a24aa01cc789ac0df77f20a94a19433/src/assets/logo.png" alt="Honest Father" width="160" height="160" />
+</p>
+
+<h1 align="center">Honest Father</h1>
 
 An open-source desktop AI assistant for mock interviews, exam preparation, and learning. Honest Father is a fork of [Cheating Daddy](https://github.com/sohzm/cheating-daddy) by [sohzm](https://github.com/sohzm) and its contributors, distributed under GPL-3.0.
 
