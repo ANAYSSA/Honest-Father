@@ -7,7 +7,7 @@ module.exports = {
     packagerConfig: {
         asar: true,
         name: 'Honest Father',
-        executableName: 'HonestFather',
+        executableName: process.platform === 'win32' ? 'HonestFather' : 'Honest Father',
         appBundleId: 'com.anayssa.honestfather',
         appCategoryType: 'public.app-category.education',
         icon: 'src/assets/logo',
