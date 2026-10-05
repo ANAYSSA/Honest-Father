@@ -1,0 +1,70 @@
+name: Build Honest Father
+
+on:
+    pull_request:
+    push:
+        tags: ['v*']
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+jobs:
+    build:
+        name: ${{ matrix.platform }} / ${{ matrix.arch }}
+        runs-on: ${{ matrix.runner }}
+        timeout-minutes: 30
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - runner: macos-15
+                      platform: darwin
+                      arch: arm64
+                    - runner: windows-2025
+                      platform: win32
+                      arch: x64
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+            - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+              with:
+                  node-version: '24'
+                  cache: npm
+            - run: npm ci
+            - run: npm test
+            - name: Check application startup
+              run: npm run test:smoke
+            - name: Create installers and portable archives
+              run: npm run make -- --platform=${{ matrix.platform }} --arch=${{ matrix.arch }}
+            - name: Name release assets and calculate checksums
+              run: node scripts/collect-artifacts.js ${{ matrix.platform }} ${{ matrix.arch }}
+            - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+              with:
+                  name: Honest-Father-${{ matrix.platform }}-${{ matrix.arch }}
+                  path: out/releases/*
+                  if-no-files-found: error
+                  retention-days: 30
+
+    release:
+        name: Publish release downloads
+        needs: build
+        if: startsWith(github.ref, 'refs/tags/v')
+        runs-on: ubuntu-24.04
+        permissions:
+            contents: write
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+            - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+              with:
+                  path: release-assets
+                  merge-multiple: true
+            - name: Create release and upload downloads
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  GH_REPO: ${{ github.repository }}
+                  HF_TAG: ${{ github.ref_name }}
+              run: |
+                  if ! gh release view "$HF_TAG" >/dev/null 2>&1; then
+                      gh release create "$HF_TAG" --verify-tag --title "Honest Father $HF_TAG" --notes-file RELEASE_NOTES.md
+                  fi
+                  gh release upload "$HF_TAG" release-assets/* --clobber

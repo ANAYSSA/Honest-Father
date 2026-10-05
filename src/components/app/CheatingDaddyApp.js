@@ -425,10 +425,11 @@ export class CheatingDaddyApp extends LitElement {
             this._localVersion = await cheatingDaddy.getVersion();
             this.requestUpdate();
 
-            const res = await fetch('https://raw.githubusercontent.com/sohzm/cheating-daddy/refs/heads/master/package.json');
+            const res = await fetch('https://api.github.com/repos/ANAYSSA/Honest-Father/releases/latest');
             if (!res.ok) return;
             const remote = await res.json();
-            const remoteVersion = remote.version;
+            const remoteVersion = remote.tag_name?.replace(/^v/, '');
+            if (!/^\d+\.\d+\.\d+$/.test(remoteVersion || '')) return;
 
             const toNum = v => v.split('.').map(Number);
             const [rMaj, rMin, rPatch] = toNum(remoteVersion);
@@ -562,6 +563,7 @@ export class CheatingDaddyApp extends LitElement {
     }
 
     async handleClose() {
+        this._sessionStartGeneration = (this._sessionStartGeneration || 0) + 1;
         if (this.currentView === 'assistant') {
             cheatingDaddy.stopCapture();
             if (window.require) {
@@ -596,56 +598,83 @@ export class CheatingDaddyApp extends LitElement {
     // ── Session start ──
 
     async handleStart() {
-        const prefs = await cheatingDaddy.storage.getPreferences();
-        const providerMode = prefs.providerMode === 'cloud' ? 'byok' : prefs.providerMode || 'byok';
+        if (this._startingSession || this.sessionActive) return;
+        this._startingSession = true;
+        const token = (this._sessionStartGeneration = (this._sessionStartGeneration || 0) + 1);
+        try {
+            const prefs = await cheatingDaddy.storage.getPreferences();
+            if (token !== this._sessionStartGeneration) return;
+            const providerMode = prefs.providerMode === 'local' ? 'local' : 'byok';
+            const success =
+                providerMode === 'local'
+                    ? await cheatingDaddy.initializeLocal(this.selectedProfile)
+                    : await cheatingDaddy.initializeGemini(this.selectedProfile, this.selectedLanguage);
+            if (!success || token !== this._sessionStartGeneration) return;
 
-        if (providerMode === 'cloud') {
-            const creds = await cheatingDaddy.storage.getCredentials();
-            if (!creds.cloudToken || creds.cloudToken.trim() === '') {
-                const mainView = this.shadowRoot.querySelector('main-view');
-                if (mainView && mainView.triggerApiKeyError) {
-                    mainView.triggerApiKeyError();
-                }
+            const capturing = await cheatingDaddy.startCapture(this.selectedScreenshotInterval, this.selectedImageQuality);
+            if (!capturing || token !== this._sessionStartGeneration) {
+                cheatingDaddy.stopCapture();
+                if (window.require) await window.require('electron').ipcRenderer.invoke('close-session', { silent: true });
                 return;
             }
-
-            const success = await cheatingDaddy.initializeCloud(this.selectedProfile);
-            if (!success) {
-                const mainView = this.shadowRoot.querySelector('main-view');
-                if (mainView && mainView.triggerApiKeyError) {
-                    mainView.triggerApiKeyError();
-                }
-                return;
+            this.responses = [];
+            this.currentResponseIndex = -1;
+            this.startTime = Date.now();
+            this.sessionActive = true;
+            this.currentView = 'assistant';
+            this._startTimer();
+        } catch (error) {
+            cheatingDaddy.stopCapture();
+            this.setStatus(`Error: Session could not start: ${error.message}`);
+            if (window.require) {
+                await window.require('electron').ipcRenderer.invoke('close-session', { silent: true }).catch(console.error);
             }
-        } else if (providerMode === 'local') {
-            const success = await cheatingDaddy.initializeLocal(this.selectedProfile);
-            if (!success) {
-                const mainView = this.shadowRoot.querySelector('main-view');
-                if (mainView && mainView.triggerApiKeyError) {
-                    mainView.triggerApiKeyError();
-                }
-                return;
-            }
-        } else {
-            const apiKey = await cheatingDaddy.storage.getApiKey();
-            if (!apiKey || apiKey === '') {
-                const mainView = this.shadowRoot.querySelector('main-view');
-                if (mainView && mainView.triggerApiKeyError) {
-                    mainView.triggerApiKeyError();
-                }
-                return;
-            }
-
-            await cheatingDaddy.initializeGemini(this.selectedProfile, this.selectedLanguage);
+        } finally {
+            this._startingSession = false;
         }
+    }
 
-        cheatingDaddy.startCapture(this.selectedScreenshotInterval, this.selectedImageQuality);
-        this.responses = [];
-        this.currentResponseIndex = -1;
-        this.startTime = Date.now();
-        this.sessionActive = true;
-        this.currentView = 'assistant';
-        this._startTimer();
+    async handleScreenStart() {
+        if (this._startingSession) return;
+        this._startingSession = true;
+        const token = (this._sessionStartGeneration = (this._sessionStartGeneration || 0) + 1);
+        try {
+            const prefs = await cheatingDaddy.storage.getPreferences();
+            if (token !== this._sessionStartGeneration) return;
+            const initialized =
+                prefs.providerMode === 'local'
+                    ? await cheatingDaddy.initializeLocal(this.selectedProfile)
+                    : await cheatingDaddy.initializeScreenSession(this.selectedProfile);
+            if (!initialized || token !== this._sessionStartGeneration) return;
+            const capturing = await cheatingDaddy.startCapture(this.selectedScreenshotInterval, this.selectedImageQuality, true);
+            if (!capturing || token !== this._sessionStartGeneration) {
+                cheatingDaddy.stopCapture();
+                if (window.require) await window.require('electron').ipcRenderer.invoke('close-session', { silent: true });
+                return;
+            }
+            this.responses = [];
+            this.currentResponseIndex = -1;
+            this.startTime = Date.now();
+            this.sessionActive = true;
+            this.currentView = 'assistant';
+            this._startTimer();
+            await this.updateComplete;
+            if (token === this._sessionStartGeneration) await cheatingDaddy.captureManualScreenshot();
+        } catch (error) {
+            cheatingDaddy.stopCapture();
+            this.setStatus(`Error: Screen session could not start: ${error.message}`);
+            if (window.require) await window.require('electron').ipcRenderer.invoke('close-session', { silent: true }).catch(console.error);
+        } finally {
+            this._startingSession = false;
+        }
+    }
+
+    handleSessionEnded(reason) {
+        this._sessionStartGeneration = (this._sessionStartGeneration || 0) + 1;
+        this.sessionActive = false;
+        this._stopTimer();
+        this.setStatus(reason);
+        this.requestUpdate();
     }
 
     async handleCancelLocalDownload() {
@@ -655,7 +684,7 @@ export class CheatingDaddyApp extends LitElement {
     async handleAPIKeyHelp() {
         if (window.require) {
             const { ipcRenderer } = window.require('electron');
-            await ipcRenderer.invoke('open-external', 'https://cheatingdaddy.com/help/api-key');
+            await ipcRenderer.invoke('open-external', 'https://aistudio.google.com/apikey');
         }
     }
 
@@ -705,7 +734,7 @@ export class CheatingDaddyApp extends LitElement {
         const result = await window.cheatingDaddy.sendTextMessage(message);
         if (!result.success) {
             this.setStatus('Error sending message: ' + result.error);
-        } else {
+        } else if (!result.completed) {
             this.setStatus('Message sent...');
             this._awaitingNewResponse = true;
         }
@@ -751,6 +780,7 @@ export class CheatingDaddyApp extends LitElement {
                         .selectedProfile=${this.selectedProfile}
                         .onProfileChange=${p => this.handleProfileChange(p)}
                         .onStart=${() => this.handleStart()}
+                        .statusText=${this.statusText}
                         .onExternalLink=${url => this.handleExternalLinkClick(url)}
                         .whisperDownloading=${this._whisperDownloading}
                         .downloadProgress=${this._localAiDownloadProgress}
@@ -890,7 +920,7 @@ export class CheatingDaddyApp extends LitElement {
         return html`
             <div class="sidebar ${this._isLiveMode() ? 'hidden' : ''}">
                 <div class="sidebar-brand">
-                    <h1>Cheating Daddy</h1>
+                    <h1>Honest Father</h1>
                 </div>
                 <nav class="sidebar-nav">
                     ${items.map(
@@ -909,7 +939,10 @@ export class CheatingDaddyApp extends LitElement {
                     ${
                         this._updateAvailable
                             ? html`
-                                  <button class="update-btn" @click=${() => this.handleExternalLinkClick('https://cheatingdaddy.com/download')}>
+                                  <button
+                                      class="update-btn"
+                                      @click=${() => this.handleExternalLinkClick('https://github.com/ANAYSSA/Honest-Father/releases/latest')}
+                                  >
                                       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
                                           <path
                                               fill="none"

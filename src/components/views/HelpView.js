@@ -1,6 +1,8 @@
 import { html, css, LitElement } from '../../assets/lit-core-2.7.4.min.js';
 import { unifiedPageStyles } from './sharedPageStyles.js';
 
+const { getDefaultKeybinds } = window.require('./utils/keybinds');
+
 export class HelpView extends LitElement {
     static styles = [
         unifiedPageStyles,
@@ -73,7 +75,10 @@ export class HelpView extends LitElement {
                 color: var(--text-primary);
                 font-size: var(--font-size-sm);
                 cursor: pointer;
-                transition: border-color var(--transition), color var(--transition), background var(--transition);
+                transition:
+                    border-color var(--transition),
+                    color var(--transition),
+                    background var(--transition);
             }
 
             .link-button:hover {
@@ -87,7 +92,6 @@ export class HelpView extends LitElement {
                     grid-template-columns: 1fr;
                 }
             }
-
         `,
     ];
 
@@ -117,19 +121,7 @@ export class HelpView extends LitElement {
 
     getDefaultKeybinds() {
         const isMac = cheatingDaddy.isMacOS || navigator.platform.includes('Mac');
-        return {
-            moveUp: isMac ? 'Alt+Up' : 'Ctrl+Up',
-            moveDown: isMac ? 'Alt+Down' : 'Ctrl+Down',
-            moveLeft: isMac ? 'Alt+Left' : 'Ctrl+Left',
-            moveRight: isMac ? 'Alt+Right' : 'Ctrl+Right',
-            toggleVisibility: isMac ? 'Cmd+\\' : 'Ctrl+\\',
-            toggleClickThrough: isMac ? 'Cmd+M' : 'Ctrl+M',
-            nextStep: isMac ? 'Cmd+Enter' : 'Ctrl+Enter',
-            previousResponse: isMac ? 'Cmd+[' : 'Ctrl+[',
-            nextResponse: isMac ? 'Cmd+]' : 'Ctrl+]',
-            scrollUp: isMac ? 'Cmd+Shift+Up' : 'Ctrl+Shift+Up',
-            scrollDown: isMac ? 'Cmd+Shift+Down' : 'Ctrl+Shift+Down',
-        };
+        return getDefaultKeybinds(isMac ? 'darwin' : 'win32');
     }
 
     _formatKeybind(keybind) {
@@ -153,6 +145,7 @@ export class HelpView extends LitElement {
             ['Next Response', this.keybinds.nextResponse],
             ['Scroll Response Up', this.keybinds.scrollUp],
             ['Scroll Response Down', this.keybinds.scrollDown],
+            ['Quit Application', this.keybinds.quitApplication],
         ];
 
         return html`
@@ -163,8 +156,8 @@ export class HelpView extends LitElement {
                     <section class="surface">
                         <div class="surface-title">Support</div>
                         <div class="link-row">
-                            <button class="link-button" @click=${() => this._open('https://cheatingdaddy.com')}>Website</button>
-                            <button class="link-button" @click=${() => this._open('https://github.com/sohzm/cheating-daddy')}>GitHub</button>
+                            <button class="link-button" @click=${() => this._open('https://github.com/ANAYSSA/Honest-Father')}>Website</button>
+                            <button class="link-button" @click=${() => this._open('https://github.com/ANAYSSA/Honest-Father')}>GitHub</button>
                             <button class="link-button" @click=${() => this._open('https://discord.gg/GCBdubnXfJ')}>Discord</button>
                         </div>
                     </section>
@@ -172,12 +165,14 @@ export class HelpView extends LitElement {
                     <section class="surface">
                         <div class="surface-title">Keyboard Shortcuts</div>
                         <div class="shortcut-grid">
-                            ${shortcutRows.map(([label, keys]) => html`
-                                <div class="shortcut-row">
-                                    <span class="shortcut-label">${label}</span>
-                                    <span class="shortcut-keys">${this._formatKeybind(keys)}</span>
-                                </div>
-                            `)}
+                            ${shortcutRows.map(
+                                ([label, keys]) => html`
+                                    <div class="shortcut-row">
+                                        <span class="shortcut-label">${label}</span>
+                                        <span class="shortcut-keys">${this._formatKeybind(keys)}</span>
+                                    </div>
+                                `
+                            )}
                         </div>
                     </section>
                 </div>

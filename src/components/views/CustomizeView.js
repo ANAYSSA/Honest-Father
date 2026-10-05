@@ -1,6 +1,8 @@
 import { html, css, LitElement } from '../../assets/lit-core-2.7.4.min.js';
 import { unifiedPageStyles } from './sharedPageStyles.js';
 
+const { getDefaultKeybinds } = window.require('./utils/keybinds');
+
 export class CustomizeView extends LitElement {
     static styles = [
         unifiedPageStyles,
@@ -193,6 +195,9 @@ export class CustomizeView extends LitElement {
         isRestoring: { type: Boolean },
         clearStatusMessage: { type: String },
         clearStatusType: { type: String },
+        keybindStatusMessage: { type: String },
+        keybindStatusType: { type: String },
+        isSavingKeybinds: { type: Boolean },
     };
 
     constructor() {
@@ -211,12 +216,32 @@ export class CustomizeView extends LitElement {
         this.isRestoring = false;
         this.clearStatusMessage = '';
         this.clearStatusType = '';
+        this.keybindStatusMessage = '';
+        this.keybindStatusType = '';
+        this.isSavingKeybinds = false;
+        this._onWindowBlur = () => this.pauseShortcuts(false);
+        this._onWindowFocus = () => {
+            if (this.shadowRoot?.activeElement?.classList.contains('keybind-input')) this.pauseShortcuts(true);
+        };
         this.backgroundTransparency = 0.8;
         this.fontSize = 20;
         this.audioMode = 'speaker_only';
         this.customPrompt = '';
         this.theme = 'dark';
         this._loadFromStorage();
+    }
+
+    connectedCallback() {
+        super.connectedCallback();
+        window.addEventListener('blur', this._onWindowBlur);
+        window.addEventListener('focus', this._onWindowFocus);
+    }
+
+    disconnectedCallback() {
+        window.removeEventListener('blur', this._onWindowBlur);
+        window.removeEventListener('focus', this._onWindowFocus);
+        this.pauseShortcuts(false);
+        super.disconnectedCallback();
     }
 
     getThemes() {
@@ -234,6 +259,12 @@ export class CustomizeView extends LitElement {
             this.theme = prefs.theme ?? 'dark';
             if (keybinds) {
                 this.keybinds = { ...this.getDefaultKeybinds(), ...keybinds };
+            }
+            const { ipcRenderer } = window.require('electron');
+            const status = await ipcRenderer.invoke('get-keybind-status');
+            if (status.success) {
+                this.keybinds = status.keybinds;
+                this.showKeybindFailures(status.failures);
             }
             this.updateBackgroundAppearance();
             this.updateFontSize();
@@ -291,19 +322,7 @@ export class CustomizeView extends LitElement {
 
     getDefaultKeybinds() {
         const isMac = cheatingDaddy.isMacOS || navigator.platform.includes('Mac');
-        return {
-            moveUp: isMac ? 'Alt+Up' : 'Ctrl+Up',
-            moveDown: isMac ? 'Alt+Down' : 'Ctrl+Down',
-            moveLeft: isMac ? 'Alt+Left' : 'Ctrl+Left',
-            moveRight: isMac ? 'Alt+Right' : 'Ctrl+Right',
-            toggleVisibility: isMac ? 'Cmd+\\' : 'Ctrl+\\',
-            toggleClickThrough: isMac ? 'Cmd+M' : 'Ctrl+M',
-            nextStep: isMac ? 'Cmd+Enter' : 'Ctrl+Enter',
-            previousResponse: isMac ? 'Cmd+[' : 'Ctrl+[',
-            nextResponse: isMac ? 'Cmd+]' : 'Ctrl+]',
-            scrollUp: isMac ? 'Cmd+Shift+Up' : 'Ctrl+Shift+Up',
-            scrollDown: isMac ? 'Cmd+Shift+Down' : 'Ctrl+Shift+Down',
-        };
+        return getDefaultKeybinds(isMac ? 'darwin' : 'win32');
     }
 
     getKeybindActions() {
@@ -319,14 +338,50 @@ export class CustomizeView extends LitElement {
             { key: 'nextResponse', name: 'Next Response', description: 'Move to next AI response' },
             { key: 'scrollUp', name: 'Scroll Response Up', description: 'Scroll response content upward' },
             { key: 'scrollDown', name: 'Scroll Response Down', description: 'Scroll response content downward' },
+            {
+                key: 'quitApplication',
+                name: 'Quit Application',
+                description: 'Stop capture and fully close the app. Saved settings and history are kept.',
+            },
         ];
     }
 
-    async saveKeybinds() {
-        await cheatingDaddy.storage.setKeybinds(this.keybinds);
-        if (window.require) {
+    showKeybindFailures(failures = []) {
+        this.keybindStatusMessage = failures.length
+            ? `Unavailable shortcuts: ${failures.map(failure => failure.accelerator).join(', ')}. Choose another combination.`
+            : '';
+        this.keybindStatusType = failures.length ? 'error' : '';
+    }
+
+    async pauseShortcuts(paused) {
+        try {
             const { ipcRenderer } = window.require('electron');
-            ipcRenderer.send('update-keybinds', this.keybinds);
+            const result = await ipcRenderer.invoke('set-shortcuts-paused', paused);
+            if (!paused && result.success && result.failures?.length) this.showKeybindFailures(result.failures);
+        } catch (error) {
+            console.error('Error updating shortcut capture:', error);
+        }
+    }
+
+    async saveKeybinds(keybinds) {
+        if (this.isSavingKeybinds) return false;
+        this.isSavingKeybinds = true;
+        try {
+            const { ipcRenderer } = window.require('electron');
+            const result = await ipcRenderer.invoke('update-keybinds', keybinds);
+            if (!result.success) throw new Error(result.error || 'Could not update shortcuts.');
+            this.keybinds = result.keybinds;
+            this.keybindStatusMessage = 'Keyboard shortcuts saved';
+            this.keybindStatusType = 'success';
+            if (result.failures?.length) this.showKeybindFailures(result.failures);
+            return true;
+        } catch (error) {
+            this.keybindStatusMessage = error.message;
+            this.keybindStatusType = 'error';
+            return false;
+        } finally {
+            this.isSavingKeybinds = false;
+            this.requestUpdate();
         }
     }
 
@@ -405,70 +460,64 @@ export class CustomizeView extends LitElement {
         document.documentElement.style.setProperty('--response-font-size', `${this.fontSize}px`);
     }
 
-    handleKeybindChange(action, value) {
-        this.keybinds = { ...this.keybinds, [action]: value };
-        this.saveKeybinds();
-        this.requestUpdate();
+    async handleKeybindChange(action, value) {
+        return this.saveKeybinds({ ...this.keybinds, [action]: value });
     }
 
     handleKeybindFocus(e) {
+        this.pauseShortcuts(true);
         e.target.placeholder = 'Press key combination...';
         e.target.select();
     }
 
-    handleKeybindInput(e) {
+    handleKeybindBlur() {
+        this.pauseShortcuts(false);
+    }
+
+    async handleKeybindInput(e) {
+        if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey) return;
         e.preventDefault();
+        if (e.key === 'Escape') {
+            e.target.blur();
+            return;
+        }
+        if (e.repeat || this.isSavingKeybinds || ['Control', 'Meta', 'Alt', 'Shift'].includes(e.key)) return;
         const modifiers = [];
         if (e.ctrlKey) modifiers.push('Ctrl');
         if (e.metaKey) modifiers.push('Cmd');
         if (e.altKey) modifiers.push('Alt');
         if (e.shiftKey) modifiers.push('Shift');
-        let mainKey = e.key;
-
-        switch (e.code) {
-            case 'ArrowUp':
-                mainKey = 'Up';
-                break;
-            case 'ArrowDown':
-                mainKey = 'Down';
-                break;
-            case 'ArrowLeft':
-                mainKey = 'Left';
-                break;
-            case 'ArrowRight':
-                mainKey = 'Right';
-                break;
-            case 'Enter':
-                mainKey = 'Enter';
-                break;
-            case 'Space':
-                mainKey = 'Space';
-                break;
-            case 'Backslash':
-                mainKey = '\\';
-                break;
-            default:
-                if (e.key.length === 1) mainKey = e.key.toUpperCase();
-                break;
-        }
-
-        if (['Control', 'Meta', 'Alt', 'Shift'].includes(e.key)) return;
-
-        const action = e.target.dataset.action;
-        const keybind = [...modifiers, mainKey].join('+');
-        this.handleKeybindChange(action, keybind);
-        e.target.value = keybind;
-        e.target.blur();
+        const namedKeys = {
+            ArrowUp: 'Up',
+            ArrowDown: 'Down',
+            ArrowLeft: 'Left',
+            ArrowRight: 'Right',
+            Enter: 'Enter',
+            Space: 'Space',
+            Backslash: '\\',
+            BracketLeft: '[',
+            BracketRight: ']',
+            Equal: '=',
+            Minus: '-',
+            Semicolon: ';',
+            Quote: "'",
+            Comma: ',',
+            Period: '.',
+            Slash: '/',
+            Backquote: '`',
+        };
+        // Physical key codes keep shortcuts usable with Russian and other keyboard layouts.
+        let mainKey = namedKeys[e.code] || e.key;
+        if (/^Key[A-Z]$/.test(e.code)) mainKey = e.code.slice(3);
+        if (/^Digit[0-9]$/.test(e.code)) mainKey = e.code.slice(5);
+        const input = e.target;
+        await this.handleKeybindChange(input.dataset.action, [...modifiers, mainKey].join('+'));
+        input.value = this.keybinds[input.dataset.action];
+        input.blur();
     }
 
     async resetKeybinds() {
-        this.keybinds = this.getDefaultKeybinds();
-        await cheatingDaddy.storage.setKeybinds(null);
-        if (window.require) {
-            const { ipcRenderer } = window.require('electron');
-            ipcRenderer.send('update-keybinds', this.keybinds);
-        }
-        this.requestUpdate();
+        return this.saveKeybinds(this.getDefaultKeybinds());
     }
 
     async restoreAllSettings() {
@@ -495,13 +544,8 @@ export class CustomizeView extends LitElement {
                 await cheatingDaddy.storage.updatePreference(key, value);
             }
 
-            // Restore keybinds
-            this.keybinds = this.getDefaultKeybinds();
-            await cheatingDaddy.storage.setKeybinds(null);
-            if (window.require) {
-                const { ipcRenderer } = window.require('electron');
-                ipcRenderer.send('update-keybinds', this.keybinds);
-            }
+            // Restore keybinds only after the operating system accepts them.
+            if (!(await this.resetKeybinds())) throw new Error(this.keybindStatusMessage);
 
             // Apply to local state
             this.selectedProfile = defaults.selectedProfile;
@@ -580,9 +624,13 @@ export class CustomizeView extends LitElement {
                             <option value="both">Both Speaker and Microphone</option>
                         </select>
                     </div>
-                    ${this.audioMode !== 'speaker_only' ? html`
-                        <div class="warning-callout">May cause unexpected behavior. Only change this if you know what you're doing.</div>
-                    ` : ''}
+                    ${
+                        this.audioMode !== 'speaker_only'
+                            ? html`
+                                  <div class="warning-callout">May cause unexpected behavior. Only change this if you know what you're doing.</div>
+                              `
+                            : ''
+                    }
                     <div class="form-group">
                         <label class="form-label">Image Quality</label>
                         <select class="control" .value=${this.selectedImageQuality} @change=${this.handleImageQualitySelect}>
@@ -662,22 +710,35 @@ export class CustomizeView extends LitElement {
         return html`
             <section class="surface">
                 <div class="surface-title">Keyboard Shortcuts</div>
-                ${this.getKeybindActions().map(action => html`
-                    <div class="keybind-row">
-                        <span class="keybind-name">${action.name}</span>
-                        <input
-                            type="text"
-                            class="control keybind-input"
-                            .value=${this.keybinds[action.key]}
-                            data-action=${action.key}
-                            @keydown=${this.handleKeybindInput}
-                            @focus=${this.handleKeybindFocus}
-                            readonly
-                        />
-                    </div>
-                `)}
+                ${this.getKeybindActions().map(
+                    action => html`
+                        <div class="keybind-row">
+                            <span class="keybind-name" title=${action.description}>${action.name}</span>
+                            <input
+                                type="text"
+                                class="control keybind-input"
+                                .value=${this.keybinds[action.key]}
+                                data-action=${action.key}
+                                @keydown=${this.handleKeybindInput}
+                                @focus=${this.handleKeybindFocus}
+                                @blur=${this.handleKeybindBlur}
+                                aria-label=${action.name}
+                                title=${action.description}
+                                readonly
+                            />
+                        </div>
+                    `
+                )}
+                <p class="keybind-name">Quit Application stops capture and closes the app, including when its window is hidden.</p>
+                ${
+                    this.keybindStatusMessage
+                        ? html` <div class="status ${this.keybindStatusType}" role="status">${this.keybindStatusMessage}</div> `
+                        : ''
+                }
                 <div style="margin-top: var(--space-sm);">
-                    <button class="control" style="width:auto;padding:8px 10px;" @click=${this.resetKeybinds}>Reset to defaults</button>
+                    <button class="control" style="width:auto;padding:8px 10px;" @click=${this.resetKeybinds} ?disabled=${this.isSavingKeybinds}>
+                        Reset to defaults
+                    </button>
                 </div>
             </section>
         `;
@@ -695,9 +756,11 @@ export class CustomizeView extends LitElement {
                         ${this.isClearing ? 'Clearing...' : 'Delete all data'}
                     </button>
                 </div>
-                ${this.clearStatusMessage ? html`
-                    <div class="status ${this.clearStatusType === 'success' ? 'success' : 'error'}">${this.clearStatusMessage}</div>
-                ` : ''}
+                ${
+                    this.clearStatusMessage
+                        ? html` <div class="status ${this.clearStatusType === 'success' ? 'success' : 'error'}">${this.clearStatusMessage}</div> `
+                        : ''
+                }
             </section>
         `;
     }
@@ -707,10 +770,7 @@ export class CustomizeView extends LitElement {
             <div class="unified-page">
                 <div class="unified-wrap">
                     <div class="page-title">Settings</div>
-                    ${this.renderAudioSection()}
-                    ${this.renderLanguageSection()}
-                    ${this.renderAppearanceSection()}
-                    ${this.renderKeyboardSection()}
+                    ${this.renderAudioSection()} ${this.renderLanguageSection()} ${this.renderAppearanceSection()} ${this.renderKeyboardSection()}
                     ${this.renderPrivacySection()}
                 </div>
             </div>

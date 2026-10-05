@@ -91,5 +91,7 @@ typings/
 
 # Electron-Forge
 out/
+work/
+src/assets/SystemAudioDump
 .specstory
 .specstory/

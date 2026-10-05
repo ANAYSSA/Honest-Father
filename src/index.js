@@ -2,13 +2,23 @@ if (require('electron-squirrel-startup')) {
     process.exit(0);
 }
 
-const { app, BrowserWindow, shell, ipcMain } = require('electron');
-const { createWindow, updateGlobalShortcuts } = require('./utils/window');
-const { setupGeminiIpcHandlers, stopMacOSAudioCapture, sendToRenderer } = require('./utils/gemini');
+const { app, BrowserWindow, shell, ipcMain, globalShortcut } = require('electron');
+const { createWindow, updateGlobalShortcuts, setShortcutsPaused, getKeybindStatus } = require('./utils/window');
+const { setupGeminiIpcHandlers, stopMacOSAudioCapture, sendToRenderer, closeActiveSession } = require('./utils/gemini');
+const { normalizeKeybinds } = require('./utils/keybinds');
+const { createShutdownHandler } = require('./utils/shutdown');
 const storage = require('./storage');
 
+app.setName('Honest Father');
+if (process.platform === 'win32') app.setAppUserModelId('com.squirrel.HonestFather.HonestFather');
 const geminiSessionRef = { current: null };
 let mainWindow = null;
+const shutdown = createShutdownHandler({
+    closeActiveSession: () => closeActiveSession(geminiSessionRef),
+    stopAudioCapture: stopMacOSAudioCapture,
+    closeLocalSession: () => require('./utils/localai').closeLocalSession(),
+    unregisterShortcuts: () => globalShortcut.unregisterAll(),
+});
 
 function createMainWindow() {
     mainWindow = createWindow(sendToRenderer, geminiSessionRef);
@@ -18,12 +28,6 @@ function createMainWindow() {
 app.whenReady().then(async () => {
     // Initialize storage (checks version, resets if needed)
     storage.initializeStorage();
-
-    // Trigger screen recording permission prompt on macOS if not already granted
-    if (process.platform === 'darwin') {
-        const { desktopCapturer } = require('electron');
-        desktopCapturer.getSources({ types: ['screen'] }).catch(() => {});
-    }
 
     createMainWindow();
     setupGeminiIpcHandlers(geminiSessionRef);
@@ -38,10 +42,8 @@ app.on('window-all-closed', () => {
     }
 });
 
-app.on('before-quit', () => {
-    stopMacOSAudioCapture();
-    require('./utils/localai').closeLocalSession();
-});
+app.on('before-quit', shutdown);
+app.on('will-quit', () => globalShortcut.unregisterAll());
 
 app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -180,7 +182,8 @@ function setupStorageIpcHandlers() {
 
     ipcMain.handle('storage:set-keybinds', async (event, keybinds) => {
         try {
-            storage.setKeybinds(keybinds);
+            const normalized = keybinds === null ? null : normalizeKeybinds(keybinds);
+            if (!storage.setKeybinds(normalized)) throw new Error('Could not save keyboard shortcuts.');
             return { success: true };
         } catch (error) {
             console.error('Error setting keybinds:', error);
@@ -266,7 +269,6 @@ function setupGeneralIpcHandlers() {
 
     ipcMain.handle('quit-application', async event => {
         try {
-            stopMacOSAudioCapture();
             app.quit();
             return { success: true };
         } catch (error) {
@@ -285,12 +287,27 @@ function setupGeneralIpcHandlers() {
         }
     });
 
-    ipcMain.on('update-keybinds', (event, newKeybinds) => {
-        if (mainWindow) {
-            // Also save to storage
-            storage.setKeybinds(newKeybinds);
-            updateGlobalShortcuts(newKeybinds, mainWindow, sendToRenderer, geminiSessionRef);
+    const isMainWindowSender = event => mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents;
+
+    ipcMain.handle('update-keybinds', (event, newKeybinds) => {
+        if (!isMainWindowSender(event)) return { success: false, error: 'Invalid shortcut request.' };
+        const previousKeybinds = getKeybindStatus().keybinds;
+        const result = updateGlobalShortcuts(newKeybinds, mainWindow, sendToRenderer, geminiSessionRef);
+        if (result.success && !storage.setKeybinds(result.keybinds)) {
+            updateGlobalShortcuts(previousKeybinds, mainWindow, sendToRenderer, geminiSessionRef);
+            return { success: false, error: 'Could not save keyboard shortcuts.', keybinds: previousKeybinds };
         }
+        return result;
+    });
+
+    ipcMain.handle('get-keybind-status', event => {
+        if (!isMainWindowSender(event)) return { success: false, error: 'Invalid shortcut request.' };
+        return getKeybindStatus();
+    });
+
+    ipcMain.handle('set-shortcuts-paused', (event, paused) => {
+        if (!isMainWindowSender(event) || typeof paused !== 'boolean') return { success: false, error: 'Invalid shortcut request.' };
+        return setShortcutsPaused(paused);
     });
 
     // Debug logging from renderer

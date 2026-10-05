@@ -1,44 +1,67 @@
 {
-    "name": "cheating-daddy",
-    "productName": "cheating-daddy",
-    "version": "0.8.0",
-    "description": "cheating daddy",
+    "name": "honest-father",
+    "productName": "Honest Father",
+    "version": "0.9.0",
+    "description": "AI assistant for mock interviews, exam preparation, and learning",
     "main": "src/index.js",
     "scripts": {
         "start": "electron-forge start",
         "package": "electron-forge package",
         "make": "electron-forge make",
         "publish": "electron-forge publish",
-        "lint": "echo \"No linting configured\""
+        "lint": "echo \"No linting configured\"",
+        "test": "node --test",
+        "build:audio": "node scripts/build-audio-helper.js",
+        "test:smoke": "electron scripts/smoke.js"
     },
     "keywords": [
-        "cheating daddy",
-        "cheating daddy ai",
-        "cheating daddy ai assistant",
-        "cheating daddy ai assistant for interviews",
-        "cheating daddy ai assistant for interviews"
+        "honest-father",
+        "interview-practice",
+        "exam-preparation",
+        "learning",
+        "electron",
+        "gemini"
     ],
     "author": {
-        "name": "sohzm",
-        "email": "sohambharambe9@gmail.com"
+        "name": "ANAYSSA"
     },
     "license": "GPL-3.0",
     "dependencies": {
-        "@google/genai": "^1.2.0",
+        "@google/genai": "2.27.0",
         "electron-squirrel-startup": "^1.0.1",
-        "ws": "^8.19.0"
+        "ws": "8.22.0"
     },
     "devDependencies": {
-        "@electron-forge/cli": "^7.8.1",
-        "@electron-forge/maker-deb": "^7.8.1",
-        "@electron-forge/maker-dmg": "^7.8.1",
-        "@electron-forge/maker-rpm": "^7.8.1",
-        "@electron-forge/maker-squirrel": "^7.8.1",
-        "@electron-forge/maker-zip": "^7.8.1",
-        "@electron-forge/plugin-auto-unpack-natives": "^7.8.1",
-        "@electron-forge/plugin-fuses": "^7.8.1",
-        "@electron/fuses": "^1.8.0",
-        "@reforged/maker-appimage": "^5.0.0",
-        "electron": "^30.0.5"
+        "@electron-forge/cli": "8.0.1",
+        "@electron-forge/maker-dmg": "8.0.1",
+        "@electron-forge/maker-squirrel": "8.0.1",
+        "@electron-forge/maker-zip": "8.0.1",
+        "@electron-forge/plugin-auto-unpack-natives": "8.0.1",
+        "@electron-forge/plugin-fuses": "8.0.1",
+        "@electron/fuses": "2.1.3",
+        "electron": "44.5.1"
+    },
+    "private": true,
+    "homepage": "https://github.com/ANAYSSA/Honest-Father",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/ANAYSSA/Honest-Father.git"
+    },
+    "bugs": {
+        "url": "https://github.com/ANAYSSA/Honest-Father/issues"
+    },
+    "contributors": [
+        {
+            "name": "sohzm",
+            "url": "https://github.com/sohzm"
+        },
+        {
+            "name": "Cheating Daddy contributors",
+            "url": "https://github.com/sohzm/cheating-daddy/graphs/contributors"
+        }
+    ],
+    "engines": {
+        "node": ">=22.13.0",
+        "npm": ">=10.9.0"
     }
 }

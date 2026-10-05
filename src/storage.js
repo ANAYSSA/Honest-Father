@@ -9,7 +9,8 @@ const DEFAULT_CONFIG = {
     configVersion: CONFIG_VERSION,
     onboarded: false,
     layout: 'normal',
-    geminiLiveModel: 'gemini-3.1-flash-live-preview',
+    geminiLiveModel: 'gemini-3.8-live',
+    geminiImageModel: 'gemini-3.1-flash-lite',
     groqModel: 'qwen/qwen3.6-27b',
     groqImageModel: 'qwen/qwen3.6-27b',
     disableGroqThinking: true,
@@ -48,11 +49,11 @@ function getConfigDir() {
     let configDir;
 
     if (platform === 'win32') {
-        configDir = path.join(os.homedir(), 'AppData', 'Roaming', 'cheating-daddy-config');
+        configDir = path.join(os.homedir(), 'AppData', 'Roaming', 'honest-father-config');
     } else if (platform === 'darwin') {
-        configDir = path.join(os.homedir(), 'Library', 'Application Support', 'cheating-daddy-config');
+        configDir = path.join(os.homedir(), 'Library', 'Application Support', 'honest-father-config');
     } else {
-        configDir = path.join(os.homedir(), '.config', 'cheating-daddy-config');
+        configDir = path.join(os.homedir(), '.config', 'honest-father-config');
     }
 
     return configDir;
@@ -166,7 +167,15 @@ function initializeStorage() {
 
 function getConfig() {
     const saved = readJsonFile(getConfigPath(), {});
-    return { ...DEFAULT_CONFIG, ...saved };
+    const config = { ...DEFAULT_CONFIG, ...saved };
+    if (
+        ['gemini-2.0-flash-live-001', 'gemini-2.5-flash-preview-native-audio-dialog', 'gemini-3.1-flash-live-preview'].includes(
+            config.geminiLiveModel
+        )
+    ) {
+        config.geminiLiveModel = DEFAULT_CONFIG.geminiLiveModel;
+    }
+    return config;
 }
 
 function setConfig(config) {
@@ -357,17 +366,10 @@ function incrementCharUsage(provider, model, charCount) {
 }
 
 function getAvailableModel() {
-    const todayLimits = getTodayLimits();
-
-    // RPD limits: flash = 20, flash-lite = 20
-    // After both exhausted, fall back to flash (for paid API users)
-    if (todayLimits.flash.count < 20) {
-        return 'gemini-2.5-flash';
-    } else if (todayLimits.flashLite.count < 20) {
-        return 'gemini-2.5-flash-lite';
-    }
-
-    return 'gemini-2.5-flash'; // Default to flash for paid API users
+    // Provider quotas vary by project and billing tier. Local counters are usage
+    // history, never an estimate of Google's remaining quota.
+    const model = getConfig().geminiImageModel;
+    return typeof model === 'string' && model.trim() ? model.trim() : DEFAULT_CONFIG.geminiImageModel;
 }
 
 function getModelForToday() {

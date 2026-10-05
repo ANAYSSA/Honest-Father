@@ -685,6 +685,7 @@ export class MainView extends LitElement {
 
     static properties = {
         onStart: { type: Function },
+        statusText: { type: String },
         onExternalLink: { type: Function },
         selectedProfile: { type: String },
         onProfileChange: { type: Function },
@@ -699,6 +700,7 @@ export class MainView extends LitElement {
         _groqKey: { state: true },
         _openaiKey: { state: true },
         _geminiLiveModel: { state: true },
+        _geminiImageModel: { state: true },
         _groqModel: { state: true },
         _groqImageModel: { state: true },
         _disableGroqThinking: { state: true },
@@ -714,6 +716,7 @@ export class MainView extends LitElement {
     constructor() {
         super();
         this.onStart = () => {};
+        this.statusText = '';
         this.onExternalLink = () => {};
         this.selectedProfile = 'interview';
         this.onProfileChange = () => {};
@@ -727,7 +730,8 @@ export class MainView extends LitElement {
         this._geminiKey = '';
         this._groqKey = '';
         this._openaiKey = '';
-        this._geminiLiveModel = 'gemini-3.1-flash-live-preview';
+        this._geminiLiveModel = 'gemini-3.8-live';
+        this._geminiImageModel = 'gemini-3.1-flash-lite';
         this._groqModel = 'qwen/qwen3.6-27b';
         this._groqImageModel = 'qwen/qwen3.6-27b';
         this._disableGroqThinking = true;
@@ -767,7 +771,8 @@ export class MainView extends LitElement {
             this._geminiKey = (await cheatingDaddy.storage.getApiKey().catch(() => '')) || '';
             this._groqKey = (await cheatingDaddy.storage.getGroqApiKey().catch(() => '')) || '';
             this._openaiKey = creds.openaiKey || '';
-            this._geminiLiveModel = config.geminiLiveModel || 'gemini-3.1-flash-live-preview';
+            this._geminiLiveModel = config.geminiLiveModel || 'gemini-3.8-live';
+            this._geminiImageModel = config.geminiImageModel || 'gemini-3.1-flash-lite';
             this._groqModel = config.groqModel || 'qwen/qwen3.6-27b';
             this._groqImageModel = config.groqImageModel || 'qwen/qwen3.6-27b';
             this._disableGroqThinking = config.disableGroqThinking === true;
@@ -954,6 +959,12 @@ export class MainView extends LitElement {
     async _saveGroqModel(val) {
         this._groqModel = val;
         await cheatingDaddy.storage.updateConfig('groqModel', val);
+        this.requestUpdate();
+    }
+
+    async _saveGeminiImageModel(val) {
+        this._geminiImageModel = val;
+        await cheatingDaddy.storage.updateConfig('geminiImageModel', val);
         this.requestUpdate();
     }
 
@@ -1184,6 +1195,14 @@ export class MainView extends LitElement {
                     <div class="form-group">
                         <label class="form-label">Gemini Live Model</label>
                         <input type="text" .value=${this._geminiLiveModel} @input=${e => this._saveGeminiLiveModel(e.target.value)} />
+                        <div class="form-hint">Use a Live model available to your API project.</div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Gemini Screenshot Model</label>
+                        <input type="text" .value=${this._geminiImageModel} @input=${e => this._saveGeminiImageModel(e.target.value)} />
+                        <div class="form-hint">
+                            Used for screenshots when a Groq key is not configured. Quotas depend on your API project and model.
+                        </div>
                     </div>
                 </div>
             </details>
@@ -1335,14 +1354,15 @@ export class MainView extends LitElement {
                     this._mode === 'local'
                         ? html`
                               <div class="title-row">
-                                  <div class="page-title">Cheating Daddy <span class="mode-suffix">Local AI</span></div>
+                                  <div class="page-title">Honest Father <span class="mode-suffix">Local AI</span></div>
                                   <button class="help-btn" @click=${this._openLocalHelp} aria-label="Open Local AI help">${helpIcon}</button>
                               </div>
                           `
-                        : html` <div class="page-title">${html`Cheating Daddy <span class="mode-suffix">BYOK</span>`}</div> `
+                        : html` <div class="page-title">${html`Honest Father <span class="mode-suffix">BYOK</span>`}</div> `
                 }
                 <div class="page-subtitle">${this._mode === 'byok' ? 'Bring your own API keys' : 'Run models locally on your machine'}</div>
 
+                ${this.statusText ? html`<div class="form-hint" role="status">${this.statusText}</div>` : ''}
                 <!-- Cloud mode render branch intentionally disabled. -->
                 ${this._mode === 'byok' ? this._renderByokMode() : ''} ${this._mode === 'local' ? this._renderLocalMode() : ''}
             </div>
@@ -1363,7 +1383,7 @@ export class MainView extends LitElement {
                         <div class="help-section">
                             <div class="help-section-title">Native local AI</div>
                             <div class="help-section-text">
-                                Cheating Daddy runs llama.cpp and whisper.cpp directly. Everything stays on your computer — no external AI service or
+                                Honest Father runs llama.cpp and whisper.cpp directly. Everything stays on your computer — no external AI service or
                                 Ollama installation is required.
                             </div>
                         </div>
@@ -1372,7 +1392,7 @@ export class MainView extends LitElement {
                             <div class="help-section-title">Automatic setup</div>
                             <div class="help-section-text">
                                 The correct native runners, selected Whisper model, and language model are downloaded and checksum-verified on first
-                                use. They are stored in the Cheating Daddy config directory.
+                                use. They are stored in the Honest Father config directory.
                             </div>
                         </div>
 
