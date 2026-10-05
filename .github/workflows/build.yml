@@ -32,7 +32,13 @@ jobs:
                   cache: npm
             - run: npm ci
             - run: npm test
+            - name: Download Electron runtime
+              timeout-minutes: 3
+              env:
+                  DEBUG: '@electron/get*'
+              run: npx install-electron --no
             - name: Check application startup
+              timeout-minutes: 2
               run: npm run test:smoke
             - name: Create installers and portable archives
               run: npm run make -- --platform=${{ matrix.platform }} --arch=${{ matrix.arch }}
