@@ -2,6 +2,7 @@ const path = require('path');
 const { FusesPlugin } = require('@electron-forge/plugin-fuses');
 const { FuseV1Options, FuseVersion } = require('@electron/fuses');
 const { buildAudioHelper } = require('./scripts/build-audio-helper');
+const { verifyMacApp } = require('./scripts/verify-macos-app');
 
 module.exports = {
     packagerConfig: {
@@ -21,7 +22,16 @@ module.exports = {
             LSMinimumSystemVersion: '13.0',
         },
         ignore: [/^\/native(?:\/|$)/, /^\/scripts(?:\/|$)/, /^\/test(?:\/|$)/, /^\/work(?:\/|$)/, /^\/\.github(?:\/|$)/],
-        // Add signing and notarization here when distribution certificates are available.
+        // Re-sign the final bundle after plist/ASAR/fuse changes. '-' needs no certificate;
+        // Developer ID signing and notarization remain separate distribution steps.
+        osxSign: {
+            identity: '-',
+            identityValidation: false,
+            preAutoEntitlements: false,
+            preEmbedProvisioningProfile: false,
+            optionsForFile: () => ({ hardenedRuntime: false, timestamp: 'none' }),
+            continueOnError: false,
+        },
     },
     rebuildConfig: {},
     hooks: {
@@ -30,6 +40,10 @@ module.exports = {
         },
         prePackage: async (_config, platform, arch) => {
             if (platform === 'darwin') buildAudioHelper(arch);
+        },
+        postPackage: async (_config, { platform, outputPaths }) => {
+            if (platform !== 'darwin') return;
+            for (const outputPath of outputPaths) verifyMacApp(path.join(outputPath, 'Honest Father.app'));
         },
     },
     makers: [

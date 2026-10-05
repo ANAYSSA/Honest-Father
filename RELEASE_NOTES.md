@@ -9,10 +9,11 @@ Honest Father is an open-source assistant for mock interviews, exam preparation,
 - User-provided Honest Father artwork for the app icon, with the existing interface layout preserved.
 - macOS Apple Silicon DMG/ZIP packages; Windows x64 installer and portable ZIP.
 - macOS audio helper rebuilt from included Swift source for Apple Silicon.
+- Fixed invalid macOS bundle signatures after renaming Electron: the final app, nested helpers/frameworks, and audio helper are re-signed and verified before release.
 
 Choose `macos-arm64` for Apple Silicon, or `windows-x64` for Windows. `*-SHA256SUMS.txt` files contain download checksums.
 
-These builds are unsigned. macOS may require approval in System Settings → Privacy & Security, and Windows may display SmartScreen. Allow Screen Recording and Microphone permissions when using capture.
+macOS builds have a verified ad hoc signature, but are not Developer ID signed or notarized; approval in System Settings → Privacy & Security may still be required. Windows builds are unsigned and may display SmartScreen. Allow Screen Recording and Microphone permissions when using capture.
 
 Google quotas apply to the API project; Groq quotas depend on the account and model. The application cannot increase provider quotas. Local AI mode can work without external AI API calls after the required runtime and models are downloaded.
 
