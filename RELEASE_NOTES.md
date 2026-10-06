@@ -6,6 +6,15 @@
 
 Honest Father is an open-source assistant for mock interviews, exam preparation, and learning, forked from Cheating Daddy.
 
+## New in 0.10.8
+
+- Gemini screenshot requests now use Electron’s system-aware networking, including model discovery and streaming replies, with bounded timeouts and cancellation. Temporary failures retain safe diagnostic codes without logging keys or screenshot contents.
+- **Command + \\ / Ctrl + \\** shows or hides the app window in both modes. **Command + Shift + \\ / Ctrl + Shift + \\** independently toggles Test Review marks or stored notices. Both shortcuts can be customized.
+- **Customize → Appearance** now includes saved marker color and opacity (10–100%). Changes apply to existing marks immediately without revealing hidden ones.
+- macOS activation no longer unexpectedly restores the main window during Test Review.
+- Review instructions explicitly request only the chosen correct option, with one choice by default unless the question allows multiple selections. AI answers still require verification.
+- Local scroll tracking and the question cache continue to work without additional AI calls or browser integration. The persistent macOS signing identity is unchanged.
+
 ## New in 0.10.7
 
 - Test Review now reads fresh, cursor-free snapshots of the selected display. Snapshot, post-answer validation, and local scroll tracking share the same native pixel source, without relying on a hidden video element.

@@ -1,3 +1,24 @@
+// Only allow error metadata: messages, URLs and request data may contain credentials.
+function googleErrorDiagnostics(error = {}) {
+    const diagnostics = {};
+    const names = new Set(['Error', 'TypeError', 'ApiError', 'AbortError', 'TimeoutError', 'AggregateError']);
+    if (names.has(error.name)) diagnostics.errorClass = error.name;
+    const status = Number(error.status || error.error?.code);
+    if (Number.isInteger(status) && status >= 100 && status <= 599) diagnostics.status = status;
+    const codes = [];
+    let cause = error;
+    for (let depth = 0; cause && depth < 4; depth++, cause = cause.cause) {
+        if (
+            typeof cause.code === 'string' &&
+            /^(?:ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ERR_ABORTED|UND_ERR_[A-Z_]+)$/.test(cause.code)
+        ) {
+            codes.push(cause.code);
+        }
+    }
+    if (codes.length) diagnostics.networkCodes = [...new Set(codes)];
+    return diagnostics;
+}
+
 // Keep transport policy independent of Electron so reconnect races can be tested.
 function classifyGoogleError(error = {}) {
     let parsed = {};
@@ -272,6 +293,7 @@ function createSseLineBuffer() {
 
 module.exports = {
     classifyGoogleError,
+    googleErrorDiagnostics,
     createReconnectController,
     createRequestGate,
     createPcmActivityFilter,

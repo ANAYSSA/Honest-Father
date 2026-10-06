@@ -17,8 +17,6 @@ body {
 }
 
 .answer-ring {
-    fill: rgb(34 197 94 / 16%);
-    stroke: #16a34a;
     stroke-width: 3px;
     filter: drop-shadow(0 0 2px rgb(255 255 255 / 85%));
 }

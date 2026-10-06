@@ -4,6 +4,7 @@ const storage = require('../storage');
 const { getDefaultKeybinds, createShortcutRegistrar } = require('./keybinds');
 const { registerAutomaticScreenCapture } = require('./screenCapture');
 const { createReviewOverlay } = require('./reviewOverlay');
+const { reviewAppearanceFromPreferences } = require('./reviewAppearance');
 const shortcutRegistrar = createShortcutRegistrar(globalShortcut, process.platform);
 
 let mouseEventsIgnored = false;
@@ -47,6 +48,7 @@ function createWindow(sendToRenderer, geminiSessionRef) {
         BrowserWindow,
         screen,
         mainWindow,
+        appearance: reviewAppearanceFromPreferences(storage.getPreferences()),
         onWindowCreated: () => {
             if (process.platform === 'darwin') {
                 app.setActivationPolicy('accessory');
@@ -123,12 +125,12 @@ function updateGlobalShortcuts(keybinds, mainWindow, sendToRenderer, geminiSessi
         moveRight: () => moveWindow(moveIncrement, 0),
         toggleVisibility: () => {
             if (mainWindow.isDestroyed()) return;
-            if (currentReviewOverlay?.isActive()) {
-                currentReviewOverlay.toggle();
-                return;
-            }
             if (mainWindow.isVisible()) mainWindow.hide();
             else mainWindow.showInactive();
+        },
+        toggleReviewMarks: () => {
+            if (mainWindow.isDestroyed() || !currentReviewOverlay?.isActive()) return;
+            currentReviewOverlay.toggle();
         },
         toggleClickThrough: () => {
             if (mainWindow.isDestroyed()) return;
@@ -263,7 +265,6 @@ function setupWindowIpcHandlers(mainWindow, geminiSessionRef, screenCapture) {
                 return { success: false, error: 'Window has been destroyed' };
             }
 
-            if (reviewOverlay?.isActive()) return reviewOverlay.toggle();
             if (mainWindow.isVisible()) {
                 mainWindow.hide();
             } else {

@@ -72,6 +72,7 @@ function loadStartup(platform) {
         },
         './utils/localai': { closeLocalSession: () => calls.push('close-local') },
         './utils/keybinds': {},
+        './utils/reviewAppearance': require('../src/utils/reviewAppearance'),
         './utils/shutdown': { createShutdownHandler, createQuitController },
         './storage': { initializeStorage: () => calls.push('initialize-storage') },
     };

@@ -252,3 +252,16 @@ test('review prompts require complete structured visual controls and an explicit
     assert.match(REVIEW_SYSTEM_PROMPT, /"answers":\[\],"confidence":0/);
     assert.match(REVIEW_USER_PROMPT, /complete JSON/);
 });
+
+test('review prompts solve before locating and distinguish chosen answers from all visible controls', () => {
+    assert.match(REVIEW_SYSTEM_PROMPT, /Solve the question first.*before locating its control/);
+    assert.match(REVIEW_SYSTEM_PROMPT, /answers array is ONLY the chosen correct option or options, not a list of all visible choices or controls/);
+    assert.match(REVIEW_SYSTEM_PROMPT, /Omit every incorrect or unchosen option/);
+    assert.match(REVIEW_SYSTEM_PROMPT, /Assume single selection unless the visible question explicitly allows multiple selections/);
+    assert.match(REVIEW_SYSTEM_PROMPT, /multiple selection is not explicitly allowed, refuse rather than return several answers/);
+    assert.match(REVIEW_SYSTEM_PROMPT, /2 \+ 2\?.*exactly one answers entry, for B's control/);
+    assert.match(REVIEW_SYSTEM_PROMPT, /Do not include A's or C's controls/);
+    assert.match(REVIEW_USER_PROMPT, /Solve.*first/);
+    assert.match(REVIEW_USER_PROMPT, /never all visible choices/);
+    assert.match(REVIEW_USER_PROMPT, /exactly one answer unless the question explicitly allows multiple selections/);
+});

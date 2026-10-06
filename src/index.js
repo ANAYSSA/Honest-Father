@@ -15,6 +15,7 @@ const { setupGeminiIpcHandlers, stopMacOSAudioCapture, sendToRenderer, closeActi
 const { normalizeKeybinds } = require('./utils/keybinds');
 const { createShutdownHandler, createQuitController } = require('./utils/shutdown');
 const storage = require('./storage');
+const { reviewAppearanceFromPreferences } = require('./utils/reviewAppearance');
 
 app.setName('Honest Father');
 if (process.platform === 'win32') app.setAppUserModelId('com.squirrel.HonestFather.HonestFather');
@@ -69,7 +70,7 @@ app.on('activate', () => {
     if (quitController.isQuitting()) return;
     if (!mainWindow || mainWindow.isDestroyed()) {
         createMainWindow();
-    } else {
+    } else if (!getReviewOverlay()?.isActive()) {
         mainWindow.show();
     }
 });
@@ -175,7 +176,8 @@ function setupStorageIpcHandlers() {
 
     ipcMain.handle('storage:set-preferences', async (event, preferences) => {
         try {
-            storage.setPreferences(preferences);
+            if (!storage.setPreferences(preferences)) throw new Error('Could not save preferences.');
+            getReviewOverlay()?.setAppearance(reviewAppearanceFromPreferences(storage.getPreferences()));
             return { success: true };
         } catch (error) {
             console.error('Error setting preferences:', error);
@@ -185,7 +187,9 @@ function setupStorageIpcHandlers() {
 
     ipcMain.handle('storage:update-preference', async (event, key, value) => {
         try {
-            storage.updatePreference(key, value);
+            if (!storage.updatePreference(key, value)) throw new Error('Could not save preferences.');
+            if (key === 'reviewMarkerColor' || key === 'reviewMarkerOpacity')
+                getReviewOverlay()?.setAppearance(reviewAppearanceFromPreferences(storage.getPreferences()));
             return { success: true };
         } catch (error) {
             console.error('Error updating preference:', error);
@@ -277,6 +281,7 @@ function setupStorageIpcHandlers() {
     ipcMain.handle('storage:clear-all', async () => {
         try {
             storage.clearAllData();
+            getReviewOverlay()?.setAppearance(reviewAppearanceFromPreferences(storage.getPreferences()));
             return { success: true };
         } catch (error) {
             console.error('Error clearing all data:', error);

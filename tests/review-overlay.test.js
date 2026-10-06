@@ -13,7 +13,7 @@ function makeAnswer() {
     );
 }
 
-function makeHarness(platform = 'darwin', { clampConstructor = false, clampOnShow = false } = {}) {
+function makeHarness(platform = 'darwin', { clampConstructor = false, clampOnShow = false, appearance } = {}) {
     const windows = [];
     class FakeWindow extends EventEmitter {
         constructor(options) {
@@ -109,6 +109,7 @@ function makeHarness(platform = 'darwin', { clampConstructor = false, clampOnSho
         screen,
         mainWindow,
         platform,
+        appearance,
         onEnd: reason => endings.push(reason),
         onWindowCreated: window => createdCallbacks.push(window),
         createId: () => `id-${++id}`,
@@ -397,21 +398,95 @@ test('show/hide toggles cached circles while keeping the main application hidden
     assert.equal(harness.mainWindow.isVisible(), false);
 });
 
-test('without an answer the visibility shortcut opens main controls and can return to a capture-first notice', () => {
+test('without an answer the marks shortcut toggles a capture-first notice without opening main controls', () => {
     const harness = makeHarness('win32');
     const window = harness.start();
     window.ready();
     assert.deepEqual(harness.manager.toggle(), { success: true, visible: true });
-    assert.equal(harness.mainWindow.isVisible(), true);
-    assert.equal(window.isVisible(), false);
-    assert.deepEqual(harness.manager.toggle(), { success: true, visible: false });
     assert.equal(harness.mainWindow.isVisible(), false);
     assert.equal(window.isVisible(), true);
     assert.match(window.webContents.messages.at(-1).payload.text, /Ctrl \+ Enter/);
+    assert.deepEqual(harness.manager.toggle(), { success: true, visible: false });
+    assert.equal(harness.mainWindow.isVisible(), false);
+    assert.equal(window.isVisible(), false);
     assert.equal(
         window.calls.some(call => call[0] === 'setHiddenInMissionControl'),
         false
     );
+});
+
+test('toggling marks or notices preserves deliberately visible main controls', () => {
+    for (const platform of ['darwin', 'win32']) {
+        const harness = makeHarness(platform);
+        const window = harness.start();
+        window.ready();
+        const token = harness.answer();
+        harness.manager.showAnswer(token, { x: 0, y: 0 });
+        harness.mainWindow.showInactive();
+        const mainCalls = harness.mainWindow.calls.length;
+        assert.equal(harness.manager.toggle().visible, false);
+        assert.equal(harness.manager.toggle().visible, true);
+        assert.equal(harness.mainWindow.isVisible(), true);
+        harness.manager.status('Error: Capture the question again.');
+        assert.equal(harness.manager.toggle().visible, true);
+        assert.equal(harness.manager.toggle().visible, false);
+        assert.equal(harness.mainWindow.isVisible(), true);
+        assert.equal(harness.mainWindow.calls.length, mainCalls, 'Marks and status controls cannot show or hide the main window');
+    }
+});
+
+test('live appearance updates preserve answer geometry, token validity and both windows visibility', () => {
+    const harness = makeHarness('darwin', { appearance: { color: '#AABBCC', opacity: 0.4 } });
+    const window = harness.start();
+    window.ready();
+    const token = harness.answer();
+    harness.manager.showAnswer(token, { x: 0, y: 0 });
+    harness.mainWindow.showInactive();
+    const answer = window.webContents.messages.at(-1).payload;
+    assert.deepEqual(answer.appearance, { color: '#aabbcc', opacity: 0.4 });
+    const overlayCalls = window.calls.length;
+    const mainCalls = harness.mainWindow.calls.length;
+    const messageCount = window.webContents.messages.length;
+    harness.manager.setAppearance({ color: '#FF5500', opacity: 0.1 });
+    assert.deepEqual(window.webContents.messages.at(-1).payload, { kind: 'appearance', appearance: { color: '#ff5500', opacity: 0.1 } });
+    assert.equal(window.webContents.messages.length, messageCount + 1);
+    assert.equal(window.calls.length, overlayCalls, 'Styling alone cannot show, hide or move the overlay');
+    assert.equal(harness.mainWindow.calls.length, mainCalls);
+    assert.equal(window.isVisible(), true);
+    assert.equal(harness.mainWindow.isVisible(), true);
+    assert.equal(harness.manager.validateCapture(token, harness.dimensions).success, true);
+    harness.manager.moveAnswer(token, { x: 0, y: 0 });
+    assert.deepEqual(window.webContents.messages.at(-1).payload.answers, answer.answers);
+    assert.deepEqual(window.webContents.messages.at(-1).payload.appearance, { color: '#ff5500', opacity: 0.1 });
+    harness.manager.toggle();
+    const hiddenCalls = window.calls.length;
+    harness.manager.setAppearance({ color: '#000000', opacity: 0.5 });
+    assert.equal(window.isVisible(), false);
+    assert.equal(window.calls.length, hiddenCalls, 'Hidden marks remain hidden after a preference change');
+    assert.equal(harness.manager.toggle().visible, true);
+    assert.deepEqual(window.webContents.messages.at(-1).payload.answers, answer.answers);
+    assert.deepEqual(window.webContents.messages.at(-1).payload.appearance, { color: '#000000', opacity: 0.5 });
+});
+
+test('appearance selected before overlay readiness is retained without revealing marks or a stored notice', () => {
+    const harness = makeHarness('win32', { appearance: { color: '#112233', opacity: 0.6 } });
+    harness.manager.setAppearance({ color: '#ABCDEF', opacity: 0.25 });
+    const window = harness.start();
+    harness.manager.status('Error: Capture did not finish.');
+    harness.manager.setAppearance({ color: '#456789', opacity: 0.3 });
+    assert.equal(window.webContents.messages.length, 0);
+    window.ready();
+    assert.equal(window.isVisible(), false);
+    assert.equal(harness.mainWindow.isVisible(), false);
+    assert.deepEqual(window.webContents.messages.at(-1).payload.appearance, { color: '#456789', opacity: 0.3 });
+    assert.equal(window.webContents.messages.at(-1).payload.text, 'Error: Capture did not finish.');
+    harness.manager.toggle();
+    assert.equal(window.isVisible(), true);
+    const calls = window.calls.length;
+    harness.manager.setAppearance({ color: 'url(example)', opacity: NaN });
+    assert.deepEqual(window.webContents.messages.at(-1).payload.appearance, { color: '#16a34a', opacity: 1 });
+    assert.equal(window.calls.length, calls);
+    assert.equal(window.isVisible(), true);
 });
 
 test('review startup and errors stay hidden until the user toggles their stored notice', () => {
@@ -804,7 +879,7 @@ test('an unexpected end preserves deliberately visible controls without revealin
     const harness = makeHarness();
     const window = harness.start();
     window.ready();
-    harness.manager.toggle();
+    harness.mainWindow.showInactive();
     assert.equal(harness.mainWindow.isVisible(), true);
     const reveals = harness.mainWindow.calls.filter(call => call[0] === 'showInactive').length;
     window.webContents.emit('render-process-gone');

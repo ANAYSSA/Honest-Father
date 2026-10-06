@@ -1,5 +1,5 @@
 const { GoogleGenAI, Modality } = require('@google/genai');
-const { ipcMain } = require('electron');
+const { ipcMain, net } = require('electron');
 const { spawn } = require('child_process');
 const { saveDebugAudio } = require('../audioUtils');
 const { getSystemPrompt, getScreenshotSystemPrompt } = require('./prompts');
@@ -19,12 +19,16 @@ const {
 const { startTransportLog, logTransportEvent, closeTransportLog } = require('./transportLogger');
 const {
     classifyGoogleError,
+    googleErrorDiagnostics,
     createReconnectController,
     createRequestGate,
     createPcmActivityFilter,
     buildSessionContext,
     createSseLineBuffer,
 } = require('./geminiReliability');
+
+// Match renderer networking, including Electron's system proxy settings.
+const googleHttpFetch = (input, init) => net.fetch(input, init);
 
 // Lazy-loaded to avoid circular dependency (localai.js imports from gemini.js)
 let _localai = null;
@@ -652,7 +656,10 @@ async function sendToGemma(transcription) {
     const trimmedHistory = trimConversationHistoryForGemma(groqConversationHistory, 42000);
 
     try {
-        const ai = new GoogleGenAI({ apiKey: apiKey, httpOptions: { apiVersion: 'v1beta', timeout: 45000, retryOptions: { attempts: 1 } } });
+        const ai = new GoogleGenAI({
+            apiKey: apiKey,
+            httpOptions: { apiVersion: 'v1beta', timeout: 45000, retryOptions: { attempts: 1 }, fetch: googleHttpFetch },
+        });
         const selectedModel = getAvailableModel();
         const model = await modelResolver.resolve({ apiKey, client: ai, selected: selectedModel, kind: 'text' });
 
@@ -780,7 +787,7 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
     }
 
     try {
-        const client = new GoogleGenAI({ apiKey: apiKey.trim(), httpOptions: { apiVersion: 'v1beta' } });
+        const client = new GoogleGenAI({ apiKey: apiKey.trim(), httpOptions: { apiVersion: 'v1beta', fetch: googleHttpFetch } });
         const selectedLiveModel = getConfig().geminiLiveModel || 'auto';
         const liveModel = await Promise.race([
             modelResolver.resolve({
@@ -1222,7 +1229,10 @@ async function sendImageToGeminiHttp(base64Data, prompt, { testReview = false } 
         // Disable SDK retries; only an explicit model rejection before any response
         // may switch to one catalogue-supported alternative.
         // SDK defaults otherwise retry quota failures five times before surfacing them.
-        const ai = new GoogleGenAI({ apiKey: apiKey, httpOptions: { apiVersion: 'v1beta', timeout: 45000, retryOptions: { attempts: 1 } } });
+        const ai = new GoogleGenAI({
+            apiKey: apiKey,
+            httpOptions: { apiVersion: 'v1beta', timeout: 45000, retryOptions: { attempts: 1 }, fetch: googleHttpFetch },
+        });
         model = await modelResolver.resolve({ apiKey, client: ai, selected: selectedModel, kind, signal: controller.signal });
         if (!isCurrent()) return { success: true, skipped: true, code: 'cancelled' };
 
@@ -1304,7 +1314,7 @@ async function sendImageToGeminiHttp(base64Data, prompt, { testReview = false } 
         if (!isCurrent()) return { success: true, skipped: true, code: 'cancelled' };
         failure = error;
         const classified = classifyGoogleError(error);
-        logTransportEvent('gemini.image.failed', { model, code: classified.code });
+        logTransportEvent('gemini.image.failed', { model, code: classified.code, transport: 'chromium', ...googleErrorDiagnostics(error) });
         sendToRenderer('update-status', classified.message);
         return {
             success: false,

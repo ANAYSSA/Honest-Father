@@ -57,12 +57,48 @@ test('quit defaults use Command on macOS and Control on Windows; old saved setti
     assert.equal(migrated.quitApplication, 'Ctrl+Shift+Q');
 });
 
+for (const [platform, primary] of [
+    ['darwin', 'Cmd'],
+    ['win32', 'Ctrl'],
+]) {
+    test(`app visibility and Review marks have separate defaults and preserve older custom bindings on ${platform}`, () => {
+        const defaults = getDefaultKeybinds(platform);
+        assert.equal(defaults.toggleVisibility, `${primary}+\\`);
+        assert.equal(defaults.toggleReviewMarks, `${primary}+Shift+\\`);
+        const migrated = normalizeKeybinds({ nextStep: `${primary}+Alt+Enter` }, platform);
+        assert.equal(migrated.nextStep, `${primary}+Alt+Enter`);
+        assert.equal(migrated.toggleVisibility, defaults.toggleVisibility);
+        assert.equal(migrated.toggleReviewMarks, defaults.toggleReviewMarks);
+        assert.equal(migrated.quitApplication, defaults.quitApplication);
+
+        const legacy = {
+            toggleVisibility: `Shift+${primary}+\\`,
+            nextStep: `${primary}+Shift+Alt+\\`,
+            toggleClickThrough: `Alt+${primary}+\\`,
+        };
+        const collisionMigration = normalizeKeybinds(legacy, platform);
+        assert.equal(collisionMigration.toggleVisibility, `${primary}+Shift+\\`);
+        assert.equal(collisionMigration.nextStep, `${primary}+Alt+Shift+\\`);
+        assert.equal(collisionMigration.toggleClickThrough, `${primary}+Alt+\\`);
+        assert.equal(collisionMigration.toggleReviewMarks, `${primary}+Shift+F12`);
+        assert.deepEqual(normalizeKeybinds(collisionMigration, platform), collisionMigration, 'Saving and restarting retains the migrated shortcut');
+    });
+}
+
 test('equivalent aliases and modifier order cannot duplicate another action', () => {
     assert.equal(normalizeAccelerator('shift+commandorcontrol+q', 'darwin'), 'Cmd+Shift+Q');
     assert.equal(normalizeAccelerator('Option+Meta+q', 'darwin'), 'Cmd+Alt+Q');
     assert.throws(() => normalizeKeybinds({ quitApplication: 'Shift+Control+Up' }, 'win32'), /conflicts with Scroll Response Up/);
     assert.throws(() => normalizeKeybinds({ quitApplication: 'Meta+Shift+Up' }, 'darwin'), /conflicts with Scroll Response Up/);
     assert.throws(() => normalizeKeybinds({ quitApplication: 'Control+Option+Up', moveUp: 'Alt+Ctrl+Up' }, 'win32'), /conflicts/);
+    assert.throws(
+        () => normalizeKeybinds({ toggleReviewMarks: 'commandorcontrol+\\' }, 'darwin'),
+        /Toggle Review Marks conflicts with Toggle App Window/
+    );
+    assert.throws(
+        () => normalizeKeybinds({ toggleVisibility: 'Ctrl+Shift+\\', toggleReviewMarks: 'Shift+Control+\\' }, 'win32'),
+        /Toggle Review Marks conflicts with Toggle App Window/
+    );
 });
 
 test('IPC shortcut input rejects malformed values and shortcuts that intercept ordinary typing', () => {
@@ -100,6 +136,35 @@ test('invalid edits preserve active shortcuts without unregistering them', () =>
     assert.equal(registrar.update({ quitApplication: 'Ctrl+\\' }, actions).success, false);
     assert.equal(globalShortcut.unregisterCount, count);
     assert.ok(globalShortcut.callbacks.has('Ctrl+Shift+Q'));
+});
+
+test('custom app and Review shortcuts register independently, resume after editing, and rollback an unavailable marks edit', () => {
+    const globalShortcut = makeGlobalShortcut();
+    const registrar = createShortcutRegistrar(globalShortcut, 'darwin');
+    const defaults = getDefaultKeybinds('darwin');
+    const calls = [];
+    const actions = Object.fromEntries(Object.keys(defaults).map(action => [action, () => calls.push(action)]));
+    const custom = { ...defaults, toggleVisibility: 'Cmd+Alt+V', toggleReviewMarks: 'Cmd+Alt+R' };
+    assert.equal(registrar.update(custom, actions).success, true);
+    globalShortcut.callbacks.get(custom.toggleVisibility)();
+    globalShortcut.callbacks.get(custom.toggleReviewMarks)();
+    assert.deepEqual(calls, ['toggleVisibility', 'toggleReviewMarks']);
+    registrar.setPaused(true);
+    assert.equal(globalShortcut.callbacks.size, 0);
+    registrar.setPaused(false);
+    globalShortcut.callbacks.get(custom.toggleReviewMarks)();
+    globalShortcut.callbacks.get(defaults.quitApplication)();
+    assert.deepEqual(calls, ['toggleVisibility', 'toggleReviewMarks', 'toggleReviewMarks', 'quitApplication']);
+
+    globalShortcut.blocked.add('Cmd+Alt+X');
+    const failed = registrar.update({ ...custom, toggleReviewMarks: 'Cmd+Alt+X' }, actions);
+    assert.equal(failed.success, false);
+    assert.match(failed.error, /Toggle Review Marks.*unavailable/);
+    assert.equal(registrar.getStatus().keybinds.toggleReviewMarks, custom.toggleReviewMarks);
+    assert.ok(globalShortcut.callbacks.has(custom.toggleVisibility));
+    assert.ok(globalShortcut.callbacks.has(custom.toggleReviewMarks));
+    assert.ok(globalShortcut.callbacks.has(defaults.quitApplication));
+    assert.equal(globalShortcut.callbacks.has('Cmd+Alt+X'), false);
 });
 
 test('editing temporarily pauses shortcuts and resumes the new binding, preserving the ability to quit', () => {
@@ -262,3 +327,62 @@ test('main IPC has one update handler, rejects other senders, and rolls back whe
     app.emit('before-quit');
     assert.deepEqual(cleanup, ['session', 'audio', 'local', 'shortcuts']);
 });
+
+for (const platform of ['darwin', 'win32']) {
+    test(`app activation keeps an active Test Review main window hidden on ${platform}`, async () => {
+        const app = new EventEmitter();
+        app.whenReady = () => Promise.resolve();
+        app.setName = () => {};
+        app.setAppUserModelId = () => {};
+        app.setActivationPolicy = () => {};
+        app.dock = { hide() {} };
+        app.exit = () => {};
+        let activeReview = false;
+        let showCount = 0;
+        let createCount = 0;
+        const window = {
+            webContents: new EventEmitter(),
+            isDestroyed: () => false,
+            show: () => showCount++,
+        };
+        const overlay = { isActive: () => activeReview };
+        const ipcMain = { handle() {}, on() {} };
+        loadCommonJs(
+            'src/index.js',
+            {
+                'electron-squirrel-startup': false,
+                electron: { app, BrowserWindow: {}, shell: {}, ipcMain, globalShortcut: { unregisterAll() {} } },
+                './utils/window': {
+                    createWindow: () => {
+                        createCount++;
+                        return window;
+                    },
+                    getReviewOverlay: () => overlay,
+                    getKeybindStatus: () => ({ keybinds: getDefaultKeybinds(platform) }),
+                    setShortcutsPaused() {},
+                    disposeGlobalShortcuts() {},
+                    updateGlobalShortcuts() {},
+                },
+                './utils/gemini': {
+                    setupGeminiIpcHandlers() {},
+                    setMainWindow() {},
+                    stopMacOSAudioCapture() {},
+                    sendToRenderer() {},
+                    closeActiveSession() {},
+                },
+                './storage': { initializeStorage() {} },
+            },
+            platform
+        );
+        await Promise.resolve();
+        assert.equal(createCount, 1);
+        activeReview = true;
+        app.emit('activate');
+        app.emit('activate');
+        assert.equal(showCount, 0, 'The operating system cannot expose the hidden Review controls');
+        assert.equal(createCount, 1, 'Activation keeps the running Review session');
+        activeReview = false;
+        app.emit('activate');
+        assert.equal(showCount, 1, 'Ordinary activation still shows the main app window');
+    });
+}

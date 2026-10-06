@@ -2,12 +2,26 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
     classifyGoogleError,
+    googleErrorDiagnostics,
     createReconnectController,
     createRequestGate,
     createPcmActivityFilter,
     buildSessionContext,
     createSseLineBuffer,
 } = require('../src/utils/geminiReliability');
+
+test('transport diagnostics retain safe classes and codes without credential-bearing messages', () => {
+    assert.deepEqual(
+        googleErrorDiagnostics({
+            name: 'TypeError',
+            status: 503,
+            message: 'secret-key https://private.test',
+            cause: { code: 'ECONNRESET', message: 'secret-key', cause: { code: 'UND_ERR_CONNECT_TIMEOUT' } },
+        }),
+        { errorClass: 'TypeError', status: 503, networkCodes: ['ECONNRESET', 'UND_ERR_CONNECT_TIMEOUT'] }
+    );
+    assert.deepEqual(googleErrorDiagnostics({ name: 'secret-key', code: 'secret-key', status: 'secret-key' }), {});
+});
 
 function fakeClock() {
     let now = 0;

@@ -89,7 +89,8 @@ function harness({ platform = 'win32', permissionStatus = 'unknown', permissionT
                         },
                     },
                 };
-            if (name === '../storage') return { getKeybinds: () => null };
+            if (name === '../storage') return { getKeybinds: () => null, getPreferences: () => ({}) };
+            if (name === './reviewAppearance') return require('../src/utils/reviewAppearance');
             if (name === './screenCapture') return { registerAutomaticScreenCapture: () => ({ getLastFailure: () => ({ ...failure }) }) };
             if (name === './reviewOverlay') return { createReviewOverlay: () => overlay };
             if (name === './keybinds')
@@ -119,22 +120,52 @@ function harness({ platform = 'win32', permissionStatus = 'unknown', permissionT
     return { window, handlers, calls, endRequests, overlay, trusted, actions, ipcMain };
 }
 
-test('review IPC rejects another window and a child frame, and visibility routes to the active overlay', async () => {
+test('review IPC rejects another window and a child frame before changing main visibility', async () => {
     const h = harness();
     for (const event of [{ sender: {} }, { sender: h.window.webContents, senderFrame: {} }]) {
         assert.equal(h.handlers.get('review:begin')(event).success, false);
         assert.equal((await h.handlers.get('toggle-window-visibility')(event)).success, false);
     }
     assert.deepEqual(h.calls, []);
-    h.handlers.get('review:begin')(h.trusted);
-    h.actions.toggleVisibility();
-    await h.handlers.get('toggle-window-visibility')(h.trusted);
-    assert.deepEqual(h.calls, ['begin', 'toggle', 'toggle']);
-    h.overlay.end();
-    h.actions.toggleVisibility();
-    assert.equal(h.window.visible, false);
-    assert.equal(h.calls.at(-1), 'hide-main');
 });
+
+for (const platform of ['darwin', 'win32']) {
+    test(`app shortcut and IPC always toggle the main window independently of Review marks on ${platform}`, async () => {
+        const h = harness({ platform });
+        h.actions.toggleReviewMarks();
+        assert.deepEqual(h.calls, [], 'The Review shortcut is inactive in ordinary screen mode');
+        h.actions.toggleVisibility();
+        assert.equal(h.window.visible, false);
+        await h.handlers.get('toggle-window-visibility')(h.trusted);
+        assert.equal(h.window.visible, true);
+        h.handlers.get('review:begin')(h.trusted);
+
+        h.actions.toggleVisibility();
+        assert.equal(h.window.visible, false);
+        h.actions.toggleReviewMarks();
+        assert.equal(h.window.visible, false, 'Review marks may toggle while the app stays hidden');
+        await h.handlers.get('toggle-window-visibility')(h.trusted);
+        assert.equal(h.window.visible, true);
+        h.actions.toggleReviewMarks();
+        assert.equal(h.window.visible, true, 'Review marks do not hide a visible app');
+        assert.deepEqual(h.calls, ['hide-main', 'show-main', 'begin', 'hide-main', 'toggle', 'show-main', 'toggle']);
+
+        h.overlay.end();
+        const count = h.calls.length;
+        h.actions.toggleReviewMarks();
+        assert.equal(h.calls.length, count);
+        h.actions.toggleVisibility();
+        assert.equal(h.window.visible, false, 'App visibility retains ordinary behavior after Review ends');
+
+        h.handlers.get('review:begin')(h.trusted);
+        h.window.destroyed = true;
+        const destroyedCount = h.calls.length;
+        h.actions.toggleVisibility();
+        h.actions.toggleReviewMarks();
+        assert.equal((await h.handlers.get('toggle-window-visibility')(h.trusted)).success, false);
+        assert.equal(h.calls.length, destroyedCount, 'Destroyed windows cannot invoke either visibility action');
+    });
+}
 
 test('only the trusted main frame may request a silent review end and malformed visibility options are rejected', () => {
     const h = harness();

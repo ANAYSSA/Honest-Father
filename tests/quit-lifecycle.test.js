@@ -176,6 +176,7 @@ test('application app.quit and hotkey lifecycle keep the deadline after will-qui
                 }),
         },
         './utils/keybinds': {},
+        './utils/reviewAppearance': require('../src/utils/reviewAppearance'),
         './storage': {},
     };
     const filename = path.resolve(__dirname, '../src/index.js');

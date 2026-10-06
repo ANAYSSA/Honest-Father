@@ -301,7 +301,7 @@ test('the actual window setup installs automatic capture and supplies the matchi
             require: id => {
                 if (id === 'electron') return electron;
                 if (id === 'node:path') return path;
-                if (id === '../storage') return { getKeybinds: () => null };
+                if (id === '../storage') return { getKeybinds: () => null, getPreferences: () => ({}) };
                 return require(path.resolve(path.dirname(filename), id));
             },
         },

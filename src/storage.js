@@ -1,6 +1,12 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const {
+    DEFAULT_REVIEW_APPEARANCE,
+    reviewAppearanceFromPreferences,
+    isReviewMarkerColor,
+    isReviewMarkerOpacity,
+} = require('./utils/reviewAppearance');
 
 const CONFIG_VERSION = 1;
 
@@ -32,6 +38,8 @@ const DEFAULT_PREFERENCES = {
     audioMode: 'speaker_only',
     fontSize: 'medium',
     backgroundTransparency: 0.8,
+    reviewMarkerColor: DEFAULT_REVIEW_APPEARANCE.color,
+    reviewMarkerOpacity: DEFAULT_REVIEW_APPEARANCE.opacity,
     googleSearchEnabled: false,
     localLlmModel: 'unsloth/Qwen3.5-4B-GGUF:Q4_K_M',
     whisperModel: 'tiny.en',
@@ -224,19 +232,25 @@ function getPreferences() {
     };
 
     preferences.whisperModel = legacyWhisperModels[preferences.whisperModel] || preferences.whisperModel;
+    const appearance = reviewAppearanceFromPreferences(preferences);
+    preferences.reviewMarkerColor = appearance.color;
+    preferences.reviewMarkerOpacity = appearance.opacity;
     return preferences;
 }
 
 function setPreferences(preferences) {
+    if (Object.hasOwn(preferences, 'reviewMarkerColor') && !isReviewMarkerColor(preferences.reviewMarkerColor))
+        throw new Error('Choose a valid marker color.');
+    if (Object.hasOwn(preferences, 'reviewMarkerOpacity') && !isReviewMarkerOpacity(preferences.reviewMarkerOpacity))
+        throw new Error('Marker opacity must be between 10% and 100%.');
     const current = getPreferences();
     const updated = { ...current, ...preferences };
+    updated.reviewMarkerColor = updated.reviewMarkerColor.toLowerCase();
     return writeJsonFile(getPreferencesPath(), updated);
 }
 
 function updatePreference(key, value) {
-    const preferences = getPreferences();
-    preferences[key] = value;
-    return writeJsonFile(getPreferencesPath(), preferences);
+    return setPreferences({ [key]: value });
 }
 
 // ============ KEYBINDS ============

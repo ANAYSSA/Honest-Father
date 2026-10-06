@@ -1145,8 +1145,8 @@ export class MainView extends LitElement {
                 <span class="btn-label">Start Test Review</span>
             </button>
             <div class="form-hint">
-                Circle the answer on your practice test. ${isMac ? '⌘' : 'Ctrl'} + Enter checks a new question; ${isMac ? '⌘' : 'Ctrl'} + \\ hides or
-                shows the marks.
+                Circle the answer on your practice test. ${isMac ? '⌘' : 'Ctrl'} + Enter checks a new question; ${isMac ? '⌘' : 'Ctrl'} + Shift + \\
+                toggles the marks; ${isMac ? '⌘' : 'Ctrl'} + \\ shows or hides the app window.
             </div>
             ${
                 isDownloading

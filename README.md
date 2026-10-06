@@ -21,6 +21,15 @@ Requires macOS 13 or later, or 64-bit Windows 10/11.
 
 Published macOS builds use the same project signing certificate across versions, so updates can retain their privacy authorization. They are not Developer ID signed or notarized, so macOS may require approval under **System Settings → Privacy & Security**. Windows builds are unsigned and may show SmartScreen. Each platform includes a `SHA256SUMS.txt` file for verifying downloads. Linux packaging is outside the scope of this fork's release workflow.
 
+## What changed in 0.10.8
+
+- Gemini screenshot requests now use Electron’s system-aware networking, including model discovery and streaming replies, with bounded timeouts and cancellation. Temporary failures retain safe diagnostic codes without logging keys or screenshot contents.
+- **Command + \\ / Ctrl + \\** shows or hides the app window in both modes. **Command + Shift + \\ / Ctrl + Shift + \\** independently toggles Test Review marks or stored notices. Both shortcuts can be customized.
+- **Customize → Appearance** now includes saved marker color and opacity (10–100%). Changes apply to existing marks immediately without revealing hidden ones.
+- macOS activation no longer unexpectedly restores the main window during Test Review.
+- Review instructions explicitly request only the chosen correct option, with one choice by default unless the question allows multiple selections. AI answers still require verification.
+- Local scroll tracking and the question cache continue to work without additional AI calls or browser integration. The persistent macOS signing identity is unchanged.
+
 ## What changed in 0.10.7
 
 - Test Review now reads fresh, cursor-free snapshots of the selected display. Snapshot, post-answer validation, and local scroll tracking share the same native pixel source, without relying on a hidden video element.
@@ -81,7 +90,11 @@ Published macOS builds use the same project signing certificate across versions,
 
 For spoken practice, **Start Session** starts audio capture and the Live connection. Leave the Live model on `auto`, or enter a supported model ID, and allow the relevant microphone/system audio permissions. Screen-only practice avoids the Live connection and audio capture entirely. Gemini availability is checked using the [Models API](https://ai.google.dev/api/models).
 
-For multiple-choice practice, choose **Start Test Review**. The app hides its text window, captures the first question, and marks the proposed correct control. Press **Command + Enter** / **Ctrl + Enter** for a new question, and **Command + \\** / **Ctrl + \\** to hide or show the marks. It only annotates; it does not select or submit answers. Local scroll tracking requires the complete question and its choices to remain visible and uses no API requests. If the question cannot be matched, the marks stay hidden; scroll back or capture the new question. On macOS, reopening the app shows its main window so you can end the session or change settings. On Windows, **Ctrl + Shift + Q** quits the app; relaunch it to return to Home.
+For multiple-choice practice, choose **Start Test Review**. The app hides its text window, captures the first question, and marks the proposed correct control. Press **Command + Enter** / **Ctrl + Enter** for a new question. **Command + \\** / **Ctrl + \\** shows or hides the app window, including during Test Review. **Command + Shift + \\** / **Ctrl + Shift + \\** independently shows or hides the review marks or a stored notice. Errors remain hidden until you show the notice with that shortcut.
+
+Under **Customize → Appearance**, choose **Review Marker Color** and **Review Marker Opacity** (10–100%). Changes apply immediately and are saved for later sessions. The appearance controls preserve the current marker visibility.
+
+Test Review only annotates; it does not select or submit answers. Local scroll tracking requires the complete question and its choices to remain visible and uses no API requests. If the question cannot be matched, the marks stay hidden; scroll back or capture the new question. Show the app window to end the session or change settings; the Quit application shortcut remains available on both platforms.
 
 Test Review needs Gemini or Groq with an image-capable model. It does not open a Live/audio connection, and the Local AI mode currently does not support these visual annotations. Cached questions are kept only in memory until the review session ends; they are not added to History.
 
@@ -91,7 +104,7 @@ Google and Groq enforce quotas per API project, model, and account tier. The app
 
 ## Keyboard shortcuts
 
-All global shortcuts are configurable under **Customize → Keyboard Shortcuts**.
+All global shortcuts are configurable under **Customize → Keyboard Shortcuts**. The table shows defaults; settings display your active saved combinations.
 
 | Action                                     | macOS                 | Windows            |
 | ------------------------------------------ | --------------------- | ------------------ |
@@ -99,7 +112,8 @@ All global shortcuts are configurable under **Customize → Keyboard Shortcuts**
 | Quit application                           | `Command + Shift + Q` | `Ctrl + Shift + Q` |
 | Move window                                | `Option + Arrow`      | `Ctrl + Arrow`     |
 | Toggle click-through                       | `Command + M`         | `Ctrl + M`         |
-| Show/hide window (marks in Test Review)    | `Command + \\`        | `Ctrl + \\`        |
+| Show/hide app window                       | `Command + \`         | `Ctrl + \`         |
+| Show/hide Review marks or notice           | `Command + Shift + \` | `Ctrl + Shift + \` |
 | Send a typed message                       | `Enter`               | `Enter`            |
 
 If another application or the OS already uses a shortcut, choose a different combination in settings.

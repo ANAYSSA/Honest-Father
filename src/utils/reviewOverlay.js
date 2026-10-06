@@ -1,6 +1,7 @@
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { mapReviewAnswerToDisplay } = require('./testReview');
+const { normalizeReviewAppearance } = require('./reviewAppearance');
 
 const UPDATE_CHANNEL = 'review-overlay:update';
 const BOUNDS_ERROR = 'The review overlay could not cover the captured display. Start a new session.';
@@ -51,7 +52,9 @@ function createReviewOverlay({
     onWindowCreated = () => {},
     createId = randomUUID,
     logger = console,
+    appearance,
 }) {
+    let markerAppearance = normalizeReviewAppearance(appearance);
     let active = false;
     let selectedDisplay = null;
     let captureToken = null;
@@ -99,7 +102,7 @@ function createReviewOverlay({
                 return false;
             }
         }
-        overlayWindow.webContents.send(UPDATE_CHANNEL, pendingUpdate);
+        overlayWindow.webContents.send(UPDATE_CHANNEL, { ...pendingUpdate, appearance: markerAppearance });
         if (desiredVisible) {
             overlayWindow.showInactive();
             try {
@@ -510,31 +513,30 @@ function createReviewOverlay({
     function toggle() {
         if (!active || !mainAvailable() || !ensureUnchangedDisplay()) return failure('There is no active review session.');
         if (storedStatus) {
-            mainWindow.hide();
             userWantsStatusVisible = !userWantsStatusVisible;
             if (!renderStatus()) return failure(BOUNDS_ERROR);
             return { success: true, visible: desiredVisible };
         }
         if (!cachedAnswer) {
-            if (mainWindow.isVisible()) {
-                mainWindow.hide();
-                const shortcut = platform === 'darwin' ? 'Cmd + Enter' : 'Ctrl + Enter';
-                status(`Capture a practice question with ${shortcut}. Use the show/hide shortcut to toggle this notice.`);
-                userWantsStatusVisible = true;
-                if (!renderStatus()) return failure(BOUNDS_ERROR);
-            } else {
-                hideOverlay();
-                mainWindow.showInactive();
-            }
-            return { success: true, visible: mainWindow.isVisible() };
+            const shortcut = platform === 'darwin' ? 'Cmd + Enter' : 'Ctrl + Enter';
+            status(`Capture a practice question with ${shortcut}.`);
+            userWantsStatusVisible = true;
+            if (!renderStatus()) return failure(BOUNDS_ERROR);
+            return { success: true, visible: desiredVisible };
         }
-        mainWindow.hide();
         userWantsAnswerVisible = !userWantsAnswerVisible;
         if (!cachedAnswer.locationValid || !userWantsAnswerVisible) {
             hideOverlay();
             return { success: true, visible: false };
         }
         return showAnswer(cachedAnswer.token);
+    }
+
+    function setAppearance(value) {
+        markerAppearance = normalizeReviewAppearance(value);
+        if (overlayReady && overlayWindow && !overlayWindow.isDestroyed()) {
+            overlayWindow.webContents.send(UPDATE_CHANNEL, { kind: 'appearance', appearance: markerAppearance });
+        }
     }
 
     return {
@@ -549,6 +551,7 @@ function createReviewOverlay({
         moveAnswer,
         clear,
         toggle,
+        setAppearance,
         status,
         end,
         isActive: () => active,

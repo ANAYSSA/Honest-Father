@@ -523,7 +523,8 @@ test('native frame IPC rejects other windows and child frames before constructin
             if (name === 'node:path') return path;
             if (name === 'electron')
                 return { app: {}, BrowserWindow: Window, ipcMain, screen, desktopCapturer, globalShortcut: {}, session: { defaultSession: {} } };
-            if (name === '../storage') return { getKeybinds: () => null };
+            if (name === '../storage') return { getKeybinds: () => null, getPreferences: () => ({}) };
+            if (name === './reviewAppearance') return require('../src/utils/reviewAppearance');
             if (name === './reviewOverlay') return { createReviewOverlay: () => overlay };
             if (name === './screenCapture') return { registerAutomaticScreenCapture: () => ({}) };
             if (name === './keybinds')

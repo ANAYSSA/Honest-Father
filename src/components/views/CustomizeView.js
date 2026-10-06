@@ -2,6 +2,8 @@ import { html, css, LitElement } from '../../assets/lit-core-2.7.4.min.js';
 import { unifiedPageStyles } from './sharedPageStyles.js';
 
 const { getDefaultKeybinds } = window.require('./utils/keybinds');
+const { DEFAULT_REVIEW_APPEARANCE, MIN_REVIEW_MARKER_OPACITY, isReviewMarkerColor, isReviewMarkerOpacity, reviewAppearanceFromPreferences } =
+    window.require('./utils/reviewAppearance');
 
 export class CustomizeView extends LitElement {
     static styles = [
@@ -113,6 +115,12 @@ export class CustomizeView extends LitElement {
                 border: none;
             }
 
+            .marker-color {
+                height: 40px;
+                padding: 5px 8px;
+                cursor: pointer;
+            }
+
             .keybind-row {
                 display: flex;
                 align-items: center;
@@ -187,6 +195,9 @@ export class CustomizeView extends LitElement {
         backgroundTransparency: { type: Number },
         fontSize: { type: Number },
         theme: { type: String },
+        reviewMarkerColor: { type: String },
+        reviewMarkerOpacity: { type: Number },
+        reviewAppearanceError: { type: String },
         onProfileChange: { type: Function },
         onLanguageChange: { type: Function },
         onImageQualityChange: { type: Function },
@@ -228,6 +239,9 @@ export class CustomizeView extends LitElement {
         this.audioMode = 'speaker_only';
         this.customPrompt = '';
         this.theme = 'dark';
+        this.reviewMarkerColor = DEFAULT_REVIEW_APPEARANCE.color;
+        this.reviewMarkerOpacity = DEFAULT_REVIEW_APPEARANCE.opacity;
+        this.reviewAppearanceError = '';
         this._loadFromStorage();
     }
 
@@ -257,6 +271,9 @@ export class CustomizeView extends LitElement {
             this.audioMode = prefs.audioMode ?? 'speaker_only';
             this.customPrompt = prefs.customPrompt ?? '';
             this.theme = prefs.theme ?? 'dark';
+            const reviewAppearance = reviewAppearanceFromPreferences(prefs);
+            this.reviewMarkerColor = reviewAppearance.color;
+            this.reviewMarkerOpacity = reviewAppearance.opacity;
             if (keybinds) {
                 this.keybinds = { ...this.getDefaultKeybinds(), ...keybinds };
             }
@@ -331,7 +348,8 @@ export class CustomizeView extends LitElement {
             { key: 'moveDown', name: 'Move Window Down', description: 'Move the app window down' },
             { key: 'moveLeft', name: 'Move Window Left', description: 'Move the app window left' },
             { key: 'moveRight', name: 'Move Window Right', description: 'Move the app window right' },
-            { key: 'toggleVisibility', name: 'Toggle Visibility', description: 'Show or hide the app window' },
+            { key: 'toggleVisibility', name: 'Toggle App Window', description: 'Show or hide the app window, including during Test Review' },
+            { key: 'toggleReviewMarks', name: 'Toggle Review Marks', description: 'Show or hide Test Review marks and notices' },
             { key: 'toggleClickThrough', name: 'Toggle Click-through', description: 'Enable or disable click-through mode' },
             { key: 'nextStep', name: 'Ask Next Step', description: 'Take screenshot and ask for next step' },
             { key: 'previousResponse', name: 'Previous Response', description: 'Move to previous AI response' },
@@ -449,6 +467,33 @@ export class CustomizeView extends LitElement {
         cheatingDaddy.theme.applyBackgrounds(colors.background, this.backgroundTransparency);
     }
 
+    async saveReviewAppearance(key, value) {
+        try {
+            const result = await cheatingDaddy.storage.updatePreference(key, value);
+            if (result?.success === false) throw new Error(result.error || 'Could not save review appearance.');
+            this[key] = value;
+            this.reviewAppearanceError = '';
+            this.requestUpdate();
+            return true;
+        } catch (error) {
+            this.reviewAppearanceError = `Could not save review appearance: ${error.message}`;
+            this.requestUpdate();
+            return false;
+        }
+    }
+
+    async handleReviewMarkerColorChange(e) {
+        const color = e.target.value;
+        if (!isReviewMarkerColor(color)) return false;
+        return this.saveReviewAppearance('reviewMarkerColor', color.toLowerCase());
+    }
+
+    async handleReviewMarkerOpacityChange(e) {
+        const opacity = Number(e.target.value);
+        if (!isReviewMarkerOpacity(opacity)) return false;
+        return this.saveReviewAppearance('reviewMarkerOpacity', opacity);
+    }
+
     async handleFontSizeChange(e) {
         this.fontSize = parseInt(e.target.value, 10);
         await cheatingDaddy.storage.updatePreference('fontSize', this.fontSize);
@@ -539,6 +584,8 @@ export class CustomizeView extends LitElement {
                 backgroundTransparency: 0.8,
                 googleSearchEnabled: false,
                 theme: 'dark',
+                reviewMarkerColor: DEFAULT_REVIEW_APPEARANCE.color,
+                reviewMarkerOpacity: DEFAULT_REVIEW_APPEARANCE.opacity,
             };
             for (const [key, value] of Object.entries(defaults)) {
                 await cheatingDaddy.storage.updatePreference(key, value);
@@ -557,6 +604,9 @@ export class CustomizeView extends LitElement {
             this.googleSearchEnabled = defaults.googleSearchEnabled;
             this.customPrompt = defaults.customPrompt;
             this.theme = defaults.theme;
+            this.reviewMarkerColor = defaults.reviewMarkerColor;
+            this.reviewMarkerOpacity = defaults.reviewMarkerOpacity;
+            this.reviewAppearanceError = '';
 
             // Notify parent callbacks
             this.onProfileChange(defaults.selectedProfile);
@@ -701,7 +751,35 @@ export class CustomizeView extends LitElement {
                             @input=${this.handleFontSizeChange}
                         />
                     </div>
+                    <div class="form-group">
+                        <label class="form-label" for="review-marker-color">Review Marker Color</label>
+                        <input
+                            id="review-marker-color"
+                            class="control marker-color"
+                            type="color"
+                            .value=${this.reviewMarkerColor}
+                            @input=${this.handleReviewMarkerColorChange}
+                        />
+                    </div>
+                    <div class="form-group slider-wrap">
+                        <div class="slider-header">
+                            <label class="form-label" for="review-marker-opacity">Review Marker Opacity</label>
+                            <span class="slider-value">${Math.round(this.reviewMarkerOpacity * 100)}%</span>
+                        </div>
+                        <input
+                            id="review-marker-opacity"
+                            class="slider-input"
+                            type="range"
+                            min=${MIN_REVIEW_MARKER_OPACITY}
+                            max="1"
+                            step="0.01"
+                            .value=${this.reviewMarkerOpacity}
+                            @input=${this.handleReviewMarkerOpacityChange}
+                        />
+                        <span class="form-help">Changes apply immediately to Test Review marks.</span>
+                    </div>
                 </div>
+                ${this.reviewAppearanceError ? html`<div class="status error" role="status">${this.reviewAppearanceError}</div>` : ''}
             </section>
         `;
     }

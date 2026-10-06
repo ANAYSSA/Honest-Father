@@ -3,7 +3,8 @@ const ACTION_NAMES = {
     moveDown: 'Move Window Down',
     moveLeft: 'Move Window Left',
     moveRight: 'Move Window Right',
-    toggleVisibility: 'Toggle Visibility',
+    toggleVisibility: 'Toggle App Window',
+    toggleReviewMarks: 'Toggle Review Marks',
     toggleClickThrough: 'Toggle Click-through',
     nextStep: 'Ask Next Step',
     previousResponse: 'Previous Response',
@@ -23,6 +24,7 @@ function getDefaultKeybinds(platform = process.platform) {
         moveLeft: isMac ? 'Alt+Left' : 'Ctrl+Left',
         moveRight: isMac ? 'Alt+Right' : 'Ctrl+Right',
         toggleVisibility: `${primary}+\\`,
+        toggleReviewMarks: `${primary}+Shift+\\`,
         toggleClickThrough: `${primary}+M`,
         nextStep: `${primary}+Enter`,
         previousResponse: `${primary}+[`,
@@ -99,9 +101,29 @@ function normalizeKeybinds(input, platform = process.platform) {
         throw new Error('Invalid keyboard shortcut settings.');
     }
     const keybinds = getDefaultKeybinds(platform);
-    const seen = new Map();
     for (const action of Object.keys(keybinds)) {
         if (input && Object.hasOwn(input, action)) keybinds[action] = normalizeAccelerator(input[action], platform);
+    }
+    // Older settings have no marks action. Keep every existing custom binding if
+    // it already uses the new default; only the newly added action gets a free key.
+    // Explicitly saved marks bindings still use the normal conflict validation.
+    if (input && !Object.hasOwn(input, 'toggleReviewMarks')) {
+        const occupied = new Set(
+            Object.entries(keybinds)
+                .filter(([action]) => action !== 'toggleReviewMarks')
+                .map(([, accelerator]) => normalizeAccelerator(accelerator, platform).toLowerCase())
+        );
+        const primary = platform === 'darwin' ? 'Cmd' : 'Ctrl';
+        const candidates = [
+            keybinds.toggleReviewMarks,
+            `${primary}+Alt+Shift+\\`,
+            `${primary}+Alt+\\`,
+            ...Array.from({ length: 13 }, (_, index) => `${primary}+Shift+F${index + 12}`),
+        ];
+        keybinds.toggleReviewMarks = candidates.find(accelerator => !occupied.has(normalizeAccelerator(accelerator, platform).toLowerCase()));
+    }
+    const seen = new Map();
+    for (const action of Object.keys(keybinds)) {
         const canonical = normalizeAccelerator(keybinds[action], platform).toLowerCase();
         if (seen.has(canonical)) {
             throw new Error(`${ACTION_NAMES[action]} conflicts with ${ACTION_NAMES[seen.get(canonical)]}. Choose a different shortcut.`);

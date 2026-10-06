@@ -1,7 +1,7 @@
 import { html, css, LitElement } from '../../assets/lit-core-2.7.4.min.js';
 import { unifiedPageStyles } from './sharedPageStyles.js';
 
-const { getDefaultKeybinds } = window.require('./utils/keybinds');
+const { getDefaultKeybinds, normalizeKeybinds } = window.require('./utils/keybinds');
 
 export class HelpView extends LitElement {
     static styles = [
@@ -111,7 +111,8 @@ export class HelpView extends LitElement {
         try {
             const keybinds = await cheatingDaddy.storage.getKeybinds();
             if (keybinds) {
-                this.keybinds = { ...this.getDefaultKeybinds(), ...keybinds };
+                const isMac = cheatingDaddy.isMacOS || navigator.platform.includes('Mac');
+                this.keybinds = normalizeKeybinds(keybinds, isMac ? 'darwin' : 'win32');
                 this.requestUpdate();
             }
         } catch (error) {
@@ -138,7 +139,8 @@ export class HelpView extends LitElement {
             ['Move Window Down', this.keybinds.moveDown],
             ['Move Window Left', this.keybinds.moveLeft],
             ['Move Window Right', this.keybinds.moveRight],
-            ['Toggle Visibility', this.keybinds.toggleVisibility],
+            ['Toggle App Window', this.keybinds.toggleVisibility],
+            ['Toggle Review Marks', this.keybinds.toggleReviewMarks],
             ['Toggle Click-through', this.keybinds.toggleClickThrough],
             ['Ask Next Step', this.keybinds.nextStep],
             ['Previous Response', this.keybinds.previousResponse],

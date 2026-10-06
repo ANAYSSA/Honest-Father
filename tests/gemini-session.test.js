@@ -23,6 +23,7 @@ function harness({
     catalogue = null,
     catalogueError = null,
     listModels = null,
+    netFetch = async () => ({ ok: true }),
 } = {}) {
     let now = 0;
     let nextTimer = 0;
@@ -113,6 +114,7 @@ function harness({
         }
     }
     const electron = {
+        net: { fetch: netFetch },
         app: { isPackaged: false },
         BrowserWindow: {
             getAllWindows: () => [
@@ -748,6 +750,47 @@ async function setupImageMode(options, testReview = false) {
     const payload = testReview ? reviewPayload() : { data: Buffer.alloc(1600).toString('base64'), prompt: 'Solve the displayed question.' };
     return { h, manager, request: () => h.invoke('send-image-content', payload) };
 }
+
+test('screenshots and Test Review use Chromium fetch with the exact request and cancellation signal', async () => {
+    for (const testReview of [false, true]) {
+        const calls = [];
+        const response = { ok: true };
+        const { h, request } = await setupImageMode(
+            {
+                netFetch: async (...args) => {
+                    calls.push(args);
+                    return response;
+                },
+                stream: async function* () {
+                    yield { text: testReview ? reviewJson : '42' };
+                },
+            },
+            testReview
+        );
+        assert.equal((await request()).success, true);
+        const client = h.clients.at(-1);
+        const init = { method: 'POST', body: 'fixture', signal: h.requests[0].config.abortSignal };
+        assert.equal(await client.httpOptions.fetch('https://example.test/request', init), response);
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0][1], init);
+        assert.equal(client.httpOptions.timeout, 45000);
+        assert.equal(client.httpOptions.retryOptions.attempts, 1);
+        assert.equal(h.catalogueRequests.length, 1);
+    }
+});
+
+test('Live catalogue client also uses Chromium fetch without substituting Node networking', async () => {
+    const calls = [];
+    const h = harness({
+        netFetch: async (...args) => {
+            calls.push(args);
+            return 'chromium';
+        },
+    });
+    await h.invoke('initialize-gemini', 'unit-test-key');
+    assert.equal(await h.clients[0].httpOptions.fetch('https://example.test/catalogue', {}), 'chromium');
+    assert.equal(calls.length, 1);
+});
 
 test('normal screenshots and Test Review replace a missing saved model before generation', async () => {
     for (const testReview of [false, true]) {
