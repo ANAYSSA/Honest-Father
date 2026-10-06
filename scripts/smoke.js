@@ -110,10 +110,21 @@ app.whenReady().then(async () => {
         assert.equal(result.screenShortcutWorks, true);
         assert.equal(result.reviewButtonVisible, true);
         assert.equal(result.reviewStartWorks, true);
-        // Exercise Chromium's real media negotiation using only this synthetic app
-        // tab. No desktop pixels, audio, OS capture permission, or provider are used.
+        // Capture a separate static synthetic tab, so hiding the Review renderer
+        // does not also stop its source. No desktop pixels, audio, OS capture
+        // permission, external browser, or provider are used.
         const manager = require('../src/utils/window').getReviewOverlay();
         const display = screen.getPrimaryDisplay();
+        const mediaSource = new BrowserWindow({
+            width: 800,
+            height: 600,
+            show: false,
+            webPreferences: { backgroundThrottling: false },
+        });
+        await mediaSource.loadURL(
+            `data:text/html,${encodeURIComponent('<!doctype html><body style="background:white;color:#111;font:24px Arial"><h1>Static practice fixture</h1><p>For n = 37, find n modulo 5.</p><p>○ A: zero</p><p>○ B: two</p><p>○ C: three</p><p>○ D: four</p></body>')}`
+        );
+        mediaSource.showInactive();
         let nativeRequests = 0;
         session.defaultSession.setDisplayMediaRequestHandler(
             (request, callback) => {
@@ -121,7 +132,7 @@ app.whenReady().then(async () => {
                 assert.equal(request.frame, window.webContents.mainFrame);
                 assert.equal(request.videoRequested, true);
                 assert.equal(request.audioRequested, false);
-                callback({ video: request.frame });
+                callback({ video: mediaSource.webContents.mainFrame });
             },
             { useSystemPicker: false }
         );
@@ -139,7 +150,33 @@ app.whenReady().then(async () => {
                 try {
                     const success = await window.cheatingDaddy.startCapture(5, 'medium', true, ${review});
                     const settings = stream?.getVideoTracks()[0].getSettings();
-                    return {success, requested, width:settings?.width,height:settings?.height,frameRate:settings?.frameRate};
+                    let rawFrames = null;
+                    if (success && ${review}) {
+                        if (typeof ImageCapture !== 'function') throw new Error('Native ImageCapture is unavailable');
+                        const request = { generation: captureGeneration };
+                        const dimensions = [];
+                        const canvas = document.createElement('canvas');
+                        const context = canvas.getContext('2d', { willReadFrequently: true });
+                        for (let read = 0; read < 2; read++) {
+                            // The real hidden Test Review renderer reads the existing
+                            // static tab track before and after a simulated AI wait.
+                            // No HTMLVideoElement/compositor callbacks are involved.
+                            const bitmap = await grabReviewBitmap(stream, request, true);
+                            if (!bitmap) throw new Error('Native static frame read was canceled');
+                            try {
+                                canvas.width = bitmap.width;
+                                canvas.height = bitmap.height;
+                                context.drawImage(bitmap, 0, 0);
+                                const pixels = context.getImageData(0, 0, 1, 1);
+                                dimensions.push({ width: bitmap.width, height: bitmap.height, readable: pixels.data.length === 4 });
+                            } finally {
+                                bitmap.close();
+                            }
+                            if (read === 0) await new Promise(resolve => setTimeout(resolve, 250));
+                        }
+                        rawFrames = { dimensions, detachedVideo: hiddenVideo !== null };
+                    }
+                    return {success, requested, width:settings?.width,height:settings?.height,frameRate:settings?.frameRate,rawFrames};
                 } finally {
                     window.cheatingDaddy.stopCapture();
                     await require('electron').ipcRenderer.invoke('review:end');
@@ -151,6 +188,15 @@ app.whenReady().then(async () => {
             assert.equal(capture.requested.audio, false);
             assert.ok(capture.width > 0 && capture.height > 0);
             assert.ok(capture.frameRate <= (review ? 5 : 1));
+            if (review) {
+                assert.equal(window.isVisible(), true, 'Smoke cleanup restores the main window');
+                assert.equal(capture.rawFrames.detachedVideo, false, 'Native Review snapshots bypass the detached video compositor');
+                assert.equal(capture.rawFrames.dimensions.length, 2);
+                for (const frame of capture.rawFrames.dimensions) {
+                    assert.ok(frame.width > 0 && frame.height > 0, 'A hidden static source delivers a native ImageCapture bitmap');
+                    assert.equal(frame.readable, true);
+                }
+            }
             console.log('Native synthetic media negotiation passed:', JSON.stringify({ review, ...capture }));
         }
         assert.equal(nativeRequests, 2, 'Each start acquires one stream without retrying');
@@ -165,6 +211,7 @@ app.whenReady().then(async () => {
             assert.doesNotMatch(denial.status, /Invalid capture constraints/);
             assert.match(denial.status, /macOS|Screen & System Audio Recording/);
         }
+        mediaSource.destroy();
         const tracking = await window.webContents.executeJavaScript(`(() => {
             const { createReviewFrameTracker } = require('./utils/reviewFrame');
             const canvas = document.createElement('canvas');

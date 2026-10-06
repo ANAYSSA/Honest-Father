@@ -6,6 +6,14 @@
 
 Honest Father is an open-source assistant for mock interviews, exam preparation, and learning, forked from Cheating Daddy.
 
+## New in 0.10.6
+
+- Test Review reads frames directly from the existing shared-screen track when Chromium supports it. Static pages no longer depend on a hidden video element delivering compositor callbacks.
+- Snapshot, post-answer checks, and local scroll tracking use the same pixel source. Frame acquisition has a bounded timeout, cancellation, and bitmap cleanup; old or changed questions keep their marks hidden.
+- The compatibility video path accepts live-source frame counters instead of treating a zero presentation timestamp as a frozen stream.
+- This mode uses ordinary screen capture and a separate annotation window. It needs no browser extension, injected page script, or browser changes. Scroll tracking and cached answers remain local and use no extra AI requests.
+- The macOS signing identity, existing interface, and keyboard shortcuts are preserved.
+
 ## New in 0.10.5
 
 - Gemini screenshot requests now check the model catalogue for your API project. Both normal screenshots and Test Review use the same resolver, and Live sessions check their own supported method.

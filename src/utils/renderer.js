@@ -445,19 +445,35 @@ Focus on the question visible on screen. If essential text is unreadable or miss
 function waitForVideoFrame(video, request, fresh = false) {
     return new Promise((resolve, reject) => {
         let frameCallback = null;
+        let progressPoll = null;
         let settled = false;
-        let lastFrameTime = video.currentTime;
-        let advancingFrames = 0;
+        let lastPlaybackTime = video.currentTime;
+        let playbackAdvances = 0;
+        let lastCallbackTime = null;
+        let lastPresentedFrames = null;
+        let callbackAdvances = 0;
+        let receivedCallback = false;
         const hasFrameClock = typeof performance !== 'undefined' && typeof performance.now === 'function';
         const frameClock = () => (hasFrameClock ? performance.now() : Date.now());
         const startedAt = frameClock();
+        const hasCallbacks = typeof video.requestVideoFrameCallback === 'function';
+        const decodedFrames = () => {
+            try {
+                const frames = video.getVideoPlaybackQuality?.().totalVideoFrames;
+                return Number.isFinite(frames) && frames >= 0 ? frames : null;
+            } catch {
+                return null;
+            }
+        };
+        const initialDecodedFrames = decodedFrames();
         const cleanup = () => {
             settled = true;
             clearTimeout(timeout);
+            if (progressPoll !== null) clearTimeout(progressPoll);
             if (frameCallback !== null) video.cancelVideoFrameCallback?.(frameCallback);
             video.removeEventListener('loadeddata', ready);
-            video.removeEventListener('loadeddata', timeAdvanced);
-            video.removeEventListener('timeupdate', timeAdvanced);
+            video.removeEventListener('loadeddata', playbackProgress);
+            video.removeEventListener('timeupdate', playbackProgress);
             video.removeEventListener('error', failed);
             if (request.cancelFrameWait === cancel) request.cancelFrameWait = null;
         };
@@ -465,28 +481,67 @@ function waitForVideoFrame(video, request, fresh = false) {
             cleanup();
             resolve(true);
         };
-        const advanced = (now = frameClock(), metadata = null) => {
-            if (settled || video.readyState < 2) return false;
-            if (!fresh) {
-                ready();
-                return true;
+        const settledLongEnough = () => frameClock() - startedAt >= 150;
+        const playbackProgress = () => {
+            if (settled || video.readyState < 2) return;
+            if (!fresh) return ready();
+            const frames = decodedFrames();
+            if (initialDecodedFrames !== null && frames !== null) {
+                // This counter advances for processed video frames even when a hidden
+                // window does not present them through the compositor callback.
+                if ((!hasCallbacks || !receivedCallback) && frames - initialDecodedFrames >= 2 && settledLongEnough()) ready();
+                return;
             }
-            const frameTime = metadata?.mediaTime ?? video.currentTime;
-            if (!Number.isFinite(frameTime) || frameTime <= lastFrameTime) return false;
-            lastFrameTime = frameTime;
-            if (hasFrameClock && Number.isFinite(metadata?.captureTime) && metadata.captureTime <= startedAt) return false;
-            advancingFrames += 1;
-            if (advancingFrames < 2 || now - startedAt < 150) return false;
-            ready();
-            return true;
+            // A playback clock alone cannot bypass an available compositor callback.
+            // Older video implementations without that callback retain the event path.
+            if (hasCallbacks) return;
+            if (!Number.isFinite(video.currentTime) || video.currentTime <= lastPlaybackTime) return;
+            lastPlaybackTime = video.currentTime;
+            playbackAdvances++;
+            if (playbackAdvances >= 2 && settledLongEnough()) ready();
         };
-        const timeAdvanced = () => advanced();
-        const framePresented = (now, metadata) => {
+        const framePresented = (now, metadata = {}) => {
             if (settled) return;
             frameCallback = null;
-            if (!advanced(Number.isFinite(now) ? now : frameClock(), metadata) && !settled) {
-                frameCallback = video.requestVideoFrameCallback(framePresented);
+            receivedCallback = true;
+            if (video.readyState >= 2) {
+                const captureTime = metadata.captureTime;
+                const presentationTime = metadata.presentationTime;
+                // Some live sources use a zero/foreign capture clock. Compare it with
+                // the hide barrier only when presentation metadata confirms the same
+                // local clock; a negative capture timestamp is explicitly invalid.
+                const oldCapture =
+                    Number.isFinite(captureTime) &&
+                    (captureTime < 0 ||
+                        (hasFrameClock &&
+                            captureTime > 0 &&
+                            Number.isFinite(presentationTime) &&
+                            Math.abs(presentationTime - frameClock()) < 1000 &&
+                            captureTime <= presentationTime &&
+                            captureTime <= startedAt));
+                if (!oldCapture) {
+                    const presentedFrames = metadata.presentedFrames;
+                    const callbackTime = metadata.presentationTime ?? metadata.mediaTime;
+                    if (Number.isFinite(presentedFrames) && presentedFrames >= 0) {
+                        if (lastPresentedFrames === null || presentedFrames > lastPresentedFrames) {
+                            lastPresentedFrames = presentedFrames;
+                            callbackAdvances++;
+                        }
+                    } else if (Number.isFinite(callbackTime) && (lastCallbackTime === null || callbackTime > lastCallbackTime)) {
+                        // mediaTime is a source PTS and can be zero for live streams.
+                        // Never compare it with HTMLMediaElement.currentTime.
+                        lastCallbackTime = callbackTime;
+                        callbackAdvances++;
+                    }
+                    if (callbackAdvances >= 2 && settledLongEnough()) ready();
+                }
             }
+            if (!settled) frameCallback = video.requestVideoFrameCallback(framePresented);
+        };
+        const pollProgress = () => {
+            progressPoll = null;
+            playbackProgress();
+            if (!settled) progressPoll = setTimeout(pollProgress, 100);
         };
         const failed = () => {
             cleanup();
@@ -499,18 +554,106 @@ function waitForVideoFrame(video, request, fresh = false) {
         const timeout = setTimeout(failed, 5000);
         request.cancelFrameWait = cancel;
         video.addEventListener('error', failed, { once: true });
-        if (fresh && typeof video.requestVideoFrameCallback === 'function') {
-            frameCallback = video.requestVideoFrameCallback(framePresented);
-        } else {
-            if (video.readyState < 2) video.addEventListener('loadeddata', fresh ? timeAdvanced : ready, { once: true });
-            video.addEventListener('timeupdate', timeAdvanced);
-            if (!fresh && video.readyState >= 2) ready();
-        }
+        video.addEventListener('timeupdate', playbackProgress);
+        if (video.readyState < 2) video.addEventListener('loadeddata', fresh ? playbackProgress : ready, { once: true });
+        if (fresh && hasCallbacks) frameCallback = video.requestVideoFrameCallback(framePresented);
+        if (fresh && initialDecodedFrames !== null) progressPoll = setTimeout(pollProgress, 100);
+        if (!fresh && video.readyState >= 2) ready();
     });
+}
+
+async function grabReviewBitmap(stream, request, flushQueuedFrame = false, timeoutMs = 5000) {
+    const track = stream.getVideoTracks()[0];
+    if (!track || typeof ImageCapture !== 'function') throw new Error('The shared screen has no supported frame reader. Share it again.');
+    const isCurrent = () => request.generation === captureGeneration && stream === mediaStream && track.readyState !== 'ended';
+    if (!isCurrent()) return null;
+    const reader = new ImageCapture(track);
+    const deadline = Date.now() + timeoutMs;
+    const grab = () =>
+        new Promise((resolve, reject) => {
+            let settled = false;
+            const cleanup = () => {
+                settled = true;
+                clearTimeout(timeout);
+                if (request.cancelFrameWait === cancel) request.cancelFrameWait = null;
+            };
+            const cancel = () => {
+                cleanup();
+                resolve(null);
+            };
+            const timeout = setTimeout(
+                () => {
+                    cleanup();
+                    reject(new Error('The shared screen did not return a fresh frame. Share it again.'));
+                },
+                Math.max(1, deadline - Date.now())
+            );
+            request.cancelFrameWait = cancel;
+            Promise.resolve()
+                .then(() => (settled || !isCurrent() ? null : reader.grabFrame()))
+                .then(
+                    bitmap => {
+                        if (settled || !isCurrent()) {
+                            bitmap?.close?.();
+                            if (!settled) cancel();
+                            return;
+                        }
+                        if (
+                            !bitmap ||
+                            !Number.isInteger(bitmap.width) ||
+                            !Number.isInteger(bitmap.height) ||
+                            bitmap.width <= 0 ||
+                            bitmap.height <= 0
+                        ) {
+                            bitmap?.close?.();
+                            cleanup();
+                            reject(new Error('The shared screen returned an empty frame. Share it again.'));
+                            return;
+                        }
+                        cleanup();
+                        resolve(bitmap);
+                    },
+                    error => {
+                        if (settled) return;
+                        cleanup();
+                        if (!isCurrent()) resolve(null);
+                        else
+                            reject(
+                                new Error(
+                                    `Unable to read the shared screen frame: ${typeof error === 'string' ? error : error?.message || 'capture failed'}`
+                                )
+                            );
+                    }
+                );
+        });
+    if (flushQueuedFrame) {
+        // ImageCapture reads the track directly, bypassing the hidden video
+        // compositor. Discard a possibly queued pre-hide frame before the next
+        // read, rather than approving an old buffer merely because it is loaded.
+        const queued = await grab();
+        if (!queued) return null;
+        queued.close();
+        if (!isCurrent()) return null;
+        const settled = await new Promise(resolve => {
+            const cancel = () => {
+                clearTimeout(timer);
+                if (request.cancelFrameWait === cancel) request.cancelFrameWait = null;
+                resolve(false);
+            };
+            const timer = setTimeout(() => {
+                if (request.cancelFrameWait === cancel) request.cancelFrameWait = null;
+                resolve(isCurrent());
+            }, 150);
+            request.cancelFrameWait = cancel;
+        });
+        if (!settled || !isCurrent()) return null;
+    }
+    return isCurrent() ? grab() : null;
 }
 
 function stopReviewWatchdog() {
     if (reviewWatchdog) clearInterval(reviewWatchdog);
+    reviewFrameGuard?.frameRequest?.cancelFrameWait?.();
     reviewWatchdog = null;
     reviewFrameGuard = null;
 }
@@ -537,7 +680,20 @@ function cacheReviewQuestion(guard, replacedEntry) {
     }
 }
 
-function readReviewFrame(guard) {
+function readReviewFrame(guard, request = null, flushQueuedFrame = false) {
+    if (guard.useRawCapture) {
+        return (async () => {
+            const bitmap = await grabReviewBitmap(guard.stream, request, flushQueuedFrame, request === guard.frameRequest ? 1000 : 5000);
+            if (!bitmap) return null;
+            try {
+                if (bitmap.width !== guard.sourceWidth || bitmap.height !== guard.sourceHeight) return null;
+                guard.context.drawImage(bitmap, 0, 0, guard.frameWidth, guard.frameHeight);
+                return guard.context.getImageData(0, 0, guard.frameWidth, guard.frameHeight);
+            } finally {
+                bitmap.close();
+            }
+        })();
+    }
     if (guard.video.videoWidth !== guard.sourceWidth || guard.video.videoHeight !== guard.sourceHeight || guard.video.readyState < 2) {
         return null;
     }
@@ -548,11 +704,11 @@ function readReviewFrame(guard) {
 function startReviewWatchdog(guard) {
     stopReviewWatchdog();
     reviewFrameGuard = guard;
-    reviewWatchdog = setInterval(() => {
-        if (reviewFrameGuard !== guard || guard.generation !== captureGeneration || guard.stream !== mediaStream) return;
+    const isCurrent = () => reviewFrameGuard === guard && guard.generation === captureGeneration && guard.stream === mediaStream;
+    const checkFrame = frame => {
+        if (!isCurrent()) return;
         let location;
         try {
-            const frame = readReviewFrame(guard);
             location = frame ? guard.tracker.locate(frame) : { state: 'hidden' };
         } catch (error) {
             console.warn('Test Review screen check failed:', error.message);
@@ -569,6 +725,38 @@ function startReviewWatchdog(guard) {
             guard.hidden = true;
             ipcRenderer.invoke('review:hide-answer', guard.token).catch(console.error);
             cheatingDaddy.setStatus('Question is off screen or no longer matches. Scroll back or capture a new question.');
+        }
+    };
+    reviewWatchdog = setInterval(() => {
+        if (!isCurrent()) return;
+        if (guard.frameRequest) {
+            // A slow/stalled read must not keep an old choice visible while the
+            // learner changes the screen. The same cache can restore it later.
+            checkFrame(null);
+            return;
+        }
+        const request = { generation: guard.generation };
+        guard.frameRequest = request;
+        const completed = () => {
+            if (guard.frameRequest === request) guard.frameRequest = null;
+        };
+        try {
+            const frame = readReviewFrame(guard, request);
+            if (frame && typeof frame.then === 'function') {
+                frame
+                    .then(checkFrame, error => {
+                        if (isCurrent()) console.warn('Test Review screen read failed:', error.message);
+                        checkFrame(null);
+                    })
+                    .finally(completed);
+            } else {
+                checkFrame(frame);
+                completed();
+            }
+        } catch (error) {
+            if (isCurrent()) console.warn('Test Review screen read failed:', error.message);
+            checkFrame(null);
+            completed();
         }
     }, 500);
 }
@@ -589,6 +777,8 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false, prom
     const request = { generation };
     screenshotRequest = request;
     const testReview = captureTestReview;
+    const useRawCapture = testReview && typeof ImageCapture === 'function';
+    let captureBitmap = null;
     let reviewCapture = null;
     if (testReview) stopReviewWatchdog();
     const isCurrent = () => generation === captureGeneration && stream === mediaStream;
@@ -596,7 +786,7 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false, prom
         cheatingDaddy.setStatus('Reading screen...');
         // Keep local references across async work: ending a session clears the shared references.
         let video = hiddenVideo;
-        if (!video) {
+        if (!useRawCapture && !video) {
             video = document.createElement('video');
             video.srcObject = stream;
             video.muted = true;
@@ -605,7 +795,7 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false, prom
             await video.play();
         }
         if (!isCurrent()) return false;
-        if (video.readyState < 2 && !(await waitForVideoFrame(video, request))) return false;
+        if (!useRawCapture && video.readyState < 2 && !(await waitForVideoFrame(video, request))) return false;
         if (!isCurrent()) return false;
         if (testReview) {
             reviewCapture = await ipcRenderer.invoke('review:prepare-capture');
@@ -614,15 +804,20 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false, prom
             if (!reviewCapture?.captureId || !reviewCapture.requestId || !reviewCapture.display) {
                 throw new Error('Test Review could not identify the shared display. Start it again.');
             }
-            if (!(await waitForVideoFrame(video, request, true)) || !isCurrent()) return false;
+            if (useRawCapture) {
+                captureBitmap = await grabReviewBitmap(stream, request, true);
+                if (!captureBitmap || !isCurrent()) return false;
+            } else if (!(await waitForVideoFrame(video, request, true)) || !isCurrent()) return false;
         }
-        if (!video.videoWidth || !video.videoHeight) throw new Error('The shared screen is empty. Share it again.');
+        const sourceWidth = useRawCapture ? captureBitmap.width : video.videoWidth;
+        const sourceHeight = useRawCapture ? captureBitmap.height : video.videoHeight;
+        if (!sourceWidth || !sourceHeight) throw new Error('The shared screen is empty. Share it again.');
 
         // Keep small text legible; lower quality remains available for slow connections.
         const maxWidths = { high: 2560, medium: 1920, low: 1280 };
         const maxWidth = maxWidths[imageQuality] ?? maxWidths.medium;
-        const width = Math.min(video.videoWidth, maxWidth);
-        const height = Math.round((video.videoHeight * width) / video.videoWidth);
+        const width = Math.min(sourceWidth, maxWidth);
+        const height = Math.round((sourceHeight * width) / sourceWidth);
         const canvas = document.createElement('canvas');
         canvas.width = width;
         canvas.height = height;
@@ -630,11 +825,11 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false, prom
         if (!context) throw new Error('Unable to read the shared screen. Share it again.');
         offscreenCanvas = canvas;
         offscreenContext = context;
-        context.drawImage(video, 0, 0, width, height);
+        context.drawImage(useRawCapture ? captureBitmap : video, 0, 0, width, height);
+        captureBitmap?.close();
+        captureBitmap = null;
         const reviewSnapshot = testReview ? context.getImageData(0, 0, width, height) : null;
         if (testReview) request.reviewSnapshotReady = true;
-        const sourceWidth = video.videoWidth;
-        const sourceHeight = video.videoHeight;
         let result = null;
         let matchedCacheEntry = null;
         if (testReview) {
@@ -695,12 +890,13 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false, prom
             if (!result.reviewAnswer) throw new Error('Test Review returned no usable answer markers. Try again.');
             await ipcRenderer.invoke('review:status', '');
             if (!isCurrent()) return false;
-            if (!(await waitForVideoFrame(video, request, true)) || !isCurrent()) return false;
+            if (!useRawCapture && (!(await waitForVideoFrame(video, request, true)) || !isCurrent())) return false;
             const guard = {
                 generation,
                 stream,
                 video,
                 context,
+                useRawCapture,
                 frameWidth: width,
                 frameHeight: height,
                 snapshotBytes: reviewSnapshot.data.byteLength,
@@ -710,7 +906,8 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false, prom
                 sourceHeight,
                 tracker: createReviewFrameTracker(reviewSnapshot, result.reviewAnswer),
             };
-            const currentFrame = readReviewFrame(guard);
+            const currentFrame = await readReviewFrame(guard, request, useRawCapture);
+            if (!isCurrent()) return false;
             const location = currentFrame ? guard.tracker.locate(currentFrame) : { state: 'hidden' };
             guard.hidden = location.state !== 'matched';
             guard.offset = location.offset;
@@ -744,6 +941,7 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false, prom
         }
         return false;
     } finally {
+        captureBitmap?.close();
         // A canceled request must not release a newer session's request gate.
         if (screenshotRequest === request) screenshotRequest = null;
     }

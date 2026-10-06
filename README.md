@@ -21,6 +21,14 @@ Requires macOS 13 or later, or 64-bit Windows 10/11.
 
 Published macOS builds use the same project signing certificate across versions, so updates can retain their privacy authorization. They are not Developer ID signed or notarized, so macOS may require approval under **System Settings → Privacy & Security**. Windows builds are unsigned and may show SmartScreen. Each platform includes a `SHA256SUMS.txt` file for verifying downloads. Linux packaging is outside the scope of this fork's release workflow.
 
+## What changed in 0.10.6
+
+- Test Review reads frames directly from the existing shared-screen track when Chromium supports it. Static pages no longer depend on a hidden video element delivering compositor callbacks.
+- Snapshot, post-answer checks, and local scroll tracking use the same pixel source. Frame acquisition has a bounded timeout, cancellation, and bitmap cleanup; old or changed questions keep their marks hidden.
+- The compatibility video path accepts live-source frame counters instead of treating a zero presentation timestamp as a frozen stream.
+- This mode uses ordinary screen capture and a separate annotation window. It needs no browser extension, injected page script, or browser changes. Scroll tracking and cached answers remain local and use no extra AI requests.
+- The macOS signing identity, existing interface, and keyboard shortcuts are preserved.
+
 ## What changed in 0.10.5
 
 - Gemini now checks the API project's model catalogue before screenshot and Live requests. Automatic selection uses an available model; supported custom selections remain in use. Normal screenshot sessions and Test Review share the same model resolver.
