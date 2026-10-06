@@ -1,7 +1,7 @@
 {
     "name": "honest-father",
     "productName": "Honest Father",
-    "version": "0.10.4",
+    "version": "0.10.5",
     "description": "AI assistant for mock interviews, exam preparation, and learning",
     "main": "src/index.js",
     "scripts": {

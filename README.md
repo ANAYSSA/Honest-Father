@@ -21,7 +21,14 @@ Requires macOS 13 or later, or 64-bit Windows 10/11.
 
 Published macOS builds use the same project signing certificate across versions, so updates can retain their privacy authorization. They are not Developer ID signed or notarized, so macOS may require approval under **System Settings → Privacy & Security**. Windows builds are unsigned and may show SmartScreen. Each platform includes a `SHA256SUMS.txt` file for verifying downloads. Linux packaging is outside the scope of this fork's release workflow.
 
-## What changed in 0.10.4
+## What changed in 0.10.5
+
+- Gemini now checks the API project's model catalogue before screenshot and Live requests. Automatic selection uses an available model; supported custom selections remain in use. Normal screenshot sessions and Test Review share the same model resolver.
+- The catalogue is cached in memory, including concurrent request deduplication. An explicit unavailable-model failure before any response can try one different catalogue-supported model. Authentication and quota failures do not trigger model rotation or repeated uploads.
+- Test Review errors and progress notices no longer reveal an overlay or restore the hidden main window. **Command + \\** / **Ctrl + \\** shows or hides a stored notice; errors cannot bring back stale answer marks.
+- New Gemini settings default to `auto`. Existing selected models are checked against the catalogue without deleting keys or preferences.
+
+## Capture signing improved in 0.10.4
 
 - Published macOS apps now use a persistent, certificate-bound signing identity. Updates signed with this certificate can retain Screen Recording authorization instead of becoming a new ad-hoc identity on each build.
 - One-time migration: fully quit old copies, remove the old Honest Father entry from Screen & System Audio Recording, then add and authorize the newly installed 0.10.4 app. Future releases must keep the same signing certificate.
@@ -47,7 +54,7 @@ Published macOS builds use the same project signing certificate across versions,
 - The macOS application stays out of the Dock, including during startup. Show/hide and Quit keyboard shortcuts remain available.
 
 - Renamed the app, installers, settings directory, help links, and update checks to **Honest Father**.
-- Updated the Google GenAI SDK and Gemini Live setup. The default Live model is `gemini-3.8-live`, and the screenshot model is `gemini-3.1-flash-lite`; both can be changed in the app.
+- Updated the Google GenAI SDK and Gemini Live setup. Live and screenshot models default to `auto`; explicit model IDs can still be entered in the app.
 - Added clearer API error messages, bounded retries, and session recovery for temporary connection failures. Permission, model, and quota failures need action on the API project rather than repeated reconnection.
 - Added a configurable global **Quit application** shortcut that ends capture, shuts down child processes, and exits the app.
 - Added a screen-only shortcut flow: **Command + Enter** on macOS or **Ctrl + Enter** on Windows starts from Home and immediately analyzes a screenshot. Press it again for the next screenshot. This flow does not need a Live/audio connection.
@@ -62,7 +69,7 @@ Published macOS builds use the same project signing certificate across versions,
 5. From Home, press **Command + Enter** on macOS or **Ctrl + Enter** on Windows. Allow screen sharing or Screen Recording access when prompted; the app starts a screen-only session and analyzes the first screenshot immediately.
 6. Press the same shortcut during the session to analyze the next screenshot. Use mock interview questions or study material, then review saved conversations in History.
 
-For spoken practice, **Start Session** starts audio capture and the Live connection. Confirm the Live model is available to your API project and allow the relevant microphone/system audio permissions. Screen-only practice avoids the Live connection and audio capture entirely.
+For spoken practice, **Start Session** starts audio capture and the Live connection. Leave the Live model on `auto`, or enter a supported model ID, and allow the relevant microphone/system audio permissions. Screen-only practice avoids the Live connection and audio capture entirely. Gemini availability is checked using the [Models API](https://ai.google.dev/api/models).
 
 For multiple-choice practice, choose **Start Test Review**. The app hides its text window, captures the first question, and marks the proposed correct control. Press **Command + Enter** / **Ctrl + Enter** for a new question, and **Command + \\** / **Ctrl + \\** to hide or show the marks. It only annotates; it does not select or submit answers. Local scroll tracking requires the complete question and its choices to remain visible and uses no API requests. If the question cannot be matched, the marks stay hidden; scroll back or capture the new question. On macOS, reopening the app shows its main window so you can end the session or change settings. On Windows, **Ctrl + Shift + Q** quits the app; relaunch it to return to Home.
 
@@ -110,7 +117,7 @@ npm run make -- --platform=darwin --arch=arm64
 npm run make -- --platform=win32 --arch=x64
 ```
 
-Packages are written to `out/make`. The [build workflow](.github/workflows/build.yml) tests both platforms and automatically publishes Windows assets on a version tag. Its ad-hoc Mac build is a CI test artifact and is never uploaded to a public release. Mac releases are built on the release signer's Mac with `HONEST_FATHER_RELEASE_SIGNING=1 npm run make -- --platform=darwin --arch=arm64`, then checked with `node scripts/verify-mac-signing-stability.js`. Run `node scripts/collect-artifacts.js darwin arm64` and `node scripts/publish-macos.js v<version> <successful-build-run-id>` to upload the signed Mac files. The private signing key stays in the local macOS keychain; only its public certificate is checked into the repository. Packaging dependency versions are pinned in `package-lock.json`.
+Packages are written to `out/make`. The [build workflow](.github/workflows/build.yml) tests both platforms and uploads Windows assets to a draft release on a version tag. Publish the release after both Windows and signed Mac assets are verified. Its ad-hoc Mac build is a CI test artifact and is never uploaded to a public release. Mac releases are built on the release signer's Mac with `HONEST_FATHER_RELEASE_SIGNING=1 npm run make -- --platform=darwin --arch=arm64`, then checked with `node scripts/verify-mac-signing-stability.js`. Run `node scripts/collect-artifacts.js darwin arm64` and `node scripts/publish-macos.js v<version> <successful-build-run-id>` to upload the signed Mac files. The private signing key stays in the local macOS keychain; only its public certificate is checked into the repository. Packaging dependency versions are pinned in `package-lock.json`.
 
 For slow outbound connections, the optional [Mac publication workflow](.github/workflows/publish-macos-keyless.yml) restores the already signed app from the successful CI artifact and public per-file binary patches. It requires a SHA-256-pinned manifest of every target file, permission mode, and symlink, and verifies the persistent certificate before and after creating ZIP/DMG containers. It never signs code or receives the private key. Keep the release draft until both platform downloads have been verified.
 

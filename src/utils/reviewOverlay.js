@@ -61,6 +61,8 @@ function createReviewOverlay({
     let overlayReady = false;
     let desiredVisible = false;
     let userWantsAnswerVisible = false;
+    let storedStatus = null;
+    let userWantsStatusVisible = false;
     let pendingUpdate = { kind: 'clear' };
     const lifecycleListeners = [];
     const overlayListeners = [];
@@ -114,10 +116,12 @@ function createReviewOverlay({
         captureToken = null;
         cachedAnswer = null;
         userWantsAnswerVisible = false;
+        storedStatus = null;
+        userWantsStatusVisible = false;
         hideOverlay();
     }
 
-    function end(reason) {
+    function end(reason, restoreMain = true) {
         const wasActive = active;
         active = false;
         invalidateCapture();
@@ -129,13 +133,13 @@ function createReviewOverlay({
         overlayWindow = null;
         overlayReady = false;
         if (oldOverlay && !oldOverlay.isDestroyed()) oldOverlay.destroy();
-        if (wasActive && mainAvailable()) mainWindow.showInactive();
+        if (restoreMain && wasActive && mainAvailable()) mainWindow.showInactive();
         return { success: true, ...(reason ? { reason } : {}) };
     }
 
     function endUnexpectedly(reason) {
         if (!active) return;
-        end(reason);
+        end(reason, false);
         try {
             onEnd({ reason });
         } catch (error) {
@@ -290,7 +294,7 @@ function createReviewOverlay({
             mainWindow.hide();
             return { success: true };
         } catch (error) {
-            end();
+            end(undefined, false);
             return failure(`The review overlay could not start: ${error.message}`);
         }
     }
@@ -422,6 +426,8 @@ function createReviewOverlay({
             if (!moved.success) return moved;
         }
         if (!cachedAnswer.locationValid) return failure('The question is no longer visible. Scroll back or capture it again.');
+        storedStatus = null;
+        userWantsStatusVisible = false;
         pendingUpdate = { kind: 'answer', ...cachedAnswer.mapped };
         userWantsAnswerVisible = true;
         desiredVisible = true;
@@ -432,7 +438,9 @@ function createReviewOverlay({
     function hideAnswer(token) {
         if (!cachedAnswer || !matchesToken(token)) return failure('This review capture is no longer current.');
         cachedAnswer.locationValid = false;
-        hideOverlay();
+        if (storedStatus) {
+            if (!renderStatus()) return failure(BOUNDS_ERROR);
+        } else hideOverlay();
         return { success: true };
     }
 
@@ -444,6 +452,12 @@ function createReviewOverlay({
             const shifted = shiftAnswer(cachedAnswer.normalizedAnswer, offset);
             cachedAnswer.mapped = mapReviewAnswerToDisplay(shifted, selectedDisplay.bounds);
             cachedAnswer.locationValid = true;
+            // A local tracking update must not replace a stored error or notice.
+            // Only the user's shortcut may reveal it; a verified answer clears it.
+            if (storedStatus) {
+                if (!renderStatus()) return failure(BOUNDS_ERROR);
+                return { success: true, visible: desiredVisible };
+            }
             pendingUpdate = { kind: 'answer', ...cachedAnswer.mapped };
             desiredVisible = userWantsAnswerVisible;
             if (!flushUpdate()) return failure(BOUNDS_ERROR);
@@ -463,23 +477,39 @@ function createReviewOverlay({
     function status(text) {
         if (!active || !ensureUnchangedDisplay()) return failure('There is no active review session.');
         if (text === '') {
+            storedStatus = null;
+            userWantsStatusVisible = false;
             if (pendingUpdate.kind === 'status') hideOverlay();
             return { success: true };
         }
         if (typeof text !== 'string' || !text.trim() || text.length > 500) return failure('The review notice is invalid.');
-        pendingUpdate = { kind: 'status', text: text.replace(/[\u0000-\u001f\u007f]/g, ' ').trim() };
-        desiredVisible = true;
-        if (!flushUpdate()) return failure(BOUNDS_ERROR);
+        storedStatus = { kind: 'status', text: text.replace(/[\u0000-\u001f\u007f]/g, ' ').trim() };
+        if (cachedAnswer) cachedAnswer.locationValid = false;
+        if (!renderStatus()) return failure(BOUNDS_ERROR);
         return { success: true };
+    }
+
+    function renderStatus() {
+        pendingUpdate = storedStatus;
+        desiredVisible = userWantsStatusVisible;
+        return flushUpdate();
     }
 
     function toggle() {
         if (!active || !mainAvailable() || !ensureUnchangedDisplay()) return failure('There is no active review session.');
+        if (storedStatus) {
+            mainWindow.hide();
+            userWantsStatusVisible = !userWantsStatusVisible;
+            if (!renderStatus()) return failure(BOUNDS_ERROR);
+            return { success: true, visible: desiredVisible };
+        }
         if (!cachedAnswer) {
             if (mainWindow.isVisible()) {
                 mainWindow.hide();
                 const shortcut = platform === 'darwin' ? 'Cmd + Enter' : 'Ctrl + Enter';
-                status(`Capture a practice question with ${shortcut}. Use the show/hide shortcut again to open settings or end the session.`);
+                status(`Capture a practice question with ${shortcut}. Use the show/hide shortcut to toggle this notice.`);
+                userWantsStatusVisible = true;
+                if (!renderStatus()) return failure(BOUNDS_ERROR);
             } else {
                 hideOverlay();
                 mainWindow.showInactive();

@@ -6,7 +6,15 @@
 
 Honest Father is an open-source assistant for mock interviews, exam preparation, and learning, forked from Cheating Daddy.
 
-## New in 0.10.4
+## New in 0.10.5
+
+- Gemini screenshot requests now check the model catalogue for your API project. Both normal screenshots and Test Review use the same resolver, and Live sessions check their own supported method.
+- New model settings use `auto`. Existing supported custom IDs are preserved; unavailable selections can use an available catalogue model. No manual model change is required for the usual unavailable-model case.
+- Model metadata is cached and concurrent catalogue requests are deduplicated. Only an explicit model mismatch before a response can try one alternative. Quota and authentication failures do not rotate models or repeatedly upload your screenshot.
+- Errors and progress notices no longer pop up over your screen. **Command+Backslash / Ctrl+Backslash** shows or hides a stored Test Review notice; stale answer marks stay hidden during errors.
+- The persistent macOS signing certificate from 0.10.4 is unchanged, so this update retains the same Screen Recording identity.
+
+## Capture signing improved in 0.10.4
 
 - Published macOS apps now use a persistent, certificate-bound signing identity. Updates signed with this certificate can retain Screen Recording authorization instead of becoming a new ad-hoc identity on each build.
 - One-time migration: fully quit old copies, remove the old Honest Father entry from Screen & System Audio Recording, then add and authorize the newly installed 0.10.4 app. Future releases must keep the same signing certificate.

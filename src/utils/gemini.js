@@ -4,6 +4,7 @@ const { spawn } = require('child_process');
 const { saveDebugAudio } = require('../audioUtils');
 const { getSystemPrompt, getScreenshotSystemPrompt } = require('./prompts');
 const { REVIEW_SYSTEM_PROMPT, REVIEW_USER_PROMPT, parseReviewAnswer } = require('./testReview');
+const { createGeminiModelResolver } = require('./geminiModels');
 const { getAvailableModel, incrementLimitCount, getApiKey, getGroqApiKey, incrementCharUsage, getConfig, getPreferences } = require('../storage');
 const {
     connectCloud,
@@ -97,6 +98,7 @@ let audioStreamOpen = false;
 const audioInFlight = new Set();
 const audioFilters = { system: createPcmActivityFilter(), mic: createPcmActivityFilter() };
 const imageRequestGate = createRequestGate();
+const modelResolver = createGeminiModelResolver();
 let activeImageController = null;
 
 const reconnectController = createReconnectController({
@@ -628,7 +630,8 @@ async function sendImageToGroq(base64Data, prompt, { testReview = false } = {}) 
 }
 
 async function sendToGemma(transcription) {
-    const apiKey = getApiKey();
+    const rawApiKey = getApiKey();
+    const apiKey = typeof rawApiKey === 'string' ? rawApiKey.trim() : '';
     if (!apiKey) {
         console.log('No Gemini API key configured');
         return;
@@ -649,7 +652,9 @@ async function sendToGemma(transcription) {
     const trimmedHistory = trimConversationHistoryForGemma(groqConversationHistory, 42000);
 
     try {
-        const ai = new GoogleGenAI({ apiKey: apiKey, httpOptions: { timeout: 45000, retryOptions: { attempts: 1 } } });
+        const ai = new GoogleGenAI({ apiKey: apiKey, httpOptions: { apiVersion: 'v1beta', timeout: 45000, retryOptions: { attempts: 1 } } });
+        const selectedModel = getAvailableModel();
+        const model = await modelResolver.resolve({ apiKey, client: ai, selected: selectedModel, kind: 'text' });
 
         const messages = trimmedHistory.map(msg => ({
             role: msg.role === 'assistant' ? 'model' : 'user',
@@ -664,7 +669,7 @@ async function sendToGemma(transcription) {
         ];
 
         const response = await ai.models.generateContentStream({
-            model: 'gemma-4-26b-a4b-it',
+            model,
             contents: messagesWithSystem,
         });
 
@@ -685,9 +690,10 @@ async function sendToGemma(transcription) {
         const inputChars = systemPromptChars + historyChars;
         const outputChars = fullText.length;
 
-        incrementCharUsage('gemini', 'gemma-4-26b-a4b-it', inputChars + outputChars);
+        incrementCharUsage('gemini', model, inputChars + outputChars);
 
         if (fullText.trim()) {
+            modelResolver.remember(apiKey, selectedModel, model, 'text');
             groqConversationHistory.push({
                 role: 'assistant',
                 content: fullText.trim(),
@@ -741,6 +747,7 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
     let resolveReady;
     let rejectReady;
     let connectTimer;
+    const modelDiscoveryController = new AbortController();
     const readyPromise = new Promise((resolve, reject) => {
         resolveReady = resolve;
         rejectReady = reject;
@@ -748,7 +755,10 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
     // A server error can arrive before the SDK resolves its connect promise.
     readyPromise.catch(() => {});
     const timeoutPromise = new Promise((resolve, reject) => {
-        pendingInitializationCancel = () => reject(new Error('Session cancelled'));
+        pendingInitializationCancel = () => {
+            modelDiscoveryController.abort();
+            reject(new Error('Session cancelled'));
+        };
         connectTimer = setTimeout(() => reject(new Error('Gemini connection timed out')), 15000);
     });
     timeoutPromise.catch(() => {});
@@ -771,6 +781,18 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
 
     try {
         const client = new GoogleGenAI({ apiKey: apiKey.trim(), httpOptions: { apiVersion: 'v1beta' } });
+        const selectedLiveModel = getConfig().geminiLiveModel || 'auto';
+        const liveModel = await Promise.race([
+            modelResolver.resolve({
+                apiKey: apiKey.trim(),
+                client,
+                selected: selectedLiveModel,
+                kind: 'live',
+                signal: modelDiscoveryController.signal,
+            }),
+            timeoutPromise,
+        ]);
+        if (!isCurrent()) return null;
         const enabledTools = await getEnabledTools();
         const systemPrompt = `${getSystemPrompt(
             profile,
@@ -783,7 +805,7 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
 
         const connectPromise = client.live
             .connect({
-                model: getConfig().geminiLiveModel || 'gemini-3.8-live',
+                model: liveModel,
                 callbacks: {
                     onopen: function () {
                         if (!isCurrent()) return;
@@ -883,6 +905,7 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
         pendingGeminiSession = null;
         if (global.geminiSessionRef) global.geminiSessionRef.current = candidate;
         hadActiveSession = true;
+        modelResolver.remember(apiKey.trim(), selectedLiveModel, liveModel, 'live');
         messageBuffer = '';
         currentTranscription = '';
         audioStreamOpen = false;
@@ -918,6 +941,7 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
         }
         return null;
     } finally {
+        modelDiscoveryController.abort();
         clearTimeout(connectTimer);
         if (generation === sessionGeneration && serial === currentConnectionSerial) {
             isInitializingSession = false;
@@ -948,7 +972,7 @@ function closeConnection(session) {
 // Synchronous shutdown hook used by End and Electron before-quit.
 function closeActiveSession(geminiSessionRef = global.geminiSessionRef) {
     currentScreenMode = 'text';
-    reviewOverlay?.end();
+    reviewOverlay?.end(undefined, false);
     isUserClosing = true;
     sessionGeneration++;
     reconnectController.cancel();
@@ -1176,13 +1200,16 @@ async function sendGeminiAudio(data, mimeType, geminiSessionRef, source) {
 }
 
 async function sendImageToGeminiHttp(base64Data, prompt, { testReview = false } = {}) {
-    const model = getAvailableModel();
+    const selectedModel = getAvailableModel();
+    const kind = testReview ? 'review' : 'image';
+    let model = selectedModel;
 
-    const apiKey = getApiKey();
+    const rawApiKey = getApiKey();
+    const apiKey = typeof rawApiKey === 'string' ? rawApiKey.trim() : '';
     if (!apiKey) {
         return { success: false, error: 'No API key configured' };
     }
-    const gated = imageRequestGate.begin(JSON.stringify([model, apiKey]));
+    const gated = imageRequestGate.begin(JSON.stringify([selectedModel, apiKey]));
     if (gated) return gated;
     const generation = sessionGeneration;
     const sessionId = currentSessionId;
@@ -1192,9 +1219,12 @@ async function sendImageToGeminiHttp(base64Data, prompt, { testReview = false } 
     let failure = null;
 
     try {
-        // One bounded streaming request; let the user retry after a useful error.
+        // Disable SDK retries; only an explicit model rejection before any response
+        // may switch to one catalogue-supported alternative.
         // SDK defaults otherwise retry quota failures five times before surfacing them.
-        const ai = new GoogleGenAI({ apiKey: apiKey, httpOptions: { timeout: 45000, retryOptions: { attempts: 1 } } });
+        const ai = new GoogleGenAI({ apiKey: apiKey, httpOptions: { apiVersion: 'v1beta', timeout: 45000, retryOptions: { attempts: 1 } } });
+        model = await modelResolver.resolve({ apiKey, client: ai, selected: selectedModel, kind, signal: controller.signal });
+        if (!isCurrent()) return { success: true, skipped: true, code: 'cancelled' };
 
         const contents = [
             {
@@ -1206,35 +1236,52 @@ async function sendImageToGeminiHttp(base64Data, prompt, { testReview = false } 
             { text: prompt },
         ];
 
-        console.log(`Sending image to ${model} (streaming)...`);
-        const response = await ai.models.generateContentStream({
-            model: model,
-            contents: contents,
-            config: {
-                maxOutputTokens: 4096,
-                systemInstruction: testReview
-                    ? REVIEW_SYSTEM_PROMPT
-                    : getScreenshotSystemPrompt(currentProfile || 'interview', currentCustomPrompt || ''),
-                ...(testReview ? { responseMimeType: 'application/json', temperature: 0.1 } : {}),
-                abortSignal: controller.signal,
-            },
-        });
-        if (!isCurrent()) return { success: true, skipped: true, code: 'cancelled' };
-
-        // Increment count after successful call
-        incrementLimitCount(model);
-
-        // Stream the response
         let fullText = '';
-        let isFirst = true;
-        for await (const chunk of response) {
-            if (!isCurrent()) return { success: true, skipped: true, code: 'cancelled' };
-            const chunkText = chunk.text;
-            if (chunkText) {
-                fullText += chunkText;
-                // Send to renderer - new response for first chunk, update for subsequent
-                if (!testReview) sendToRenderer(isFirst ? 'new-response' : 'update-response', fullText);
-                isFirst = false;
+        let responseStarted = false;
+        for (let attempt = 0; attempt < 2; attempt++) {
+            try {
+                console.log(`Sending image to ${model} (streaming)...`);
+                const response = await ai.models.generateContentStream({
+                    model,
+                    contents,
+                    config: {
+                        maxOutputTokens: 4096,
+                        systemInstruction: testReview
+                            ? REVIEW_SYSTEM_PROMPT
+                            : getScreenshotSystemPrompt(currentProfile || 'interview', currentCustomPrompt || ''),
+                        ...(testReview ? { responseMimeType: 'application/json', temperature: 0.1 } : {}),
+                        abortSignal: controller.signal,
+                    },
+                });
+                if (!isCurrent()) return { success: true, skipped: true, code: 'cancelled' };
+                let isFirst = true;
+                for await (const chunk of response) {
+                    if (!isCurrent()) return { success: true, skipped: true, code: 'cancelled' };
+                    // Even a metadata/thought-only chunk means generation already began.
+                    responseStarted = true;
+                    const chunkText = chunk.text;
+                    if (chunkText) {
+                        fullText += chunkText;
+                        if (!testReview) sendToRenderer(isFirst ? 'new-response' : 'update-response', fullText);
+                        isFirst = false;
+                    }
+                }
+                break;
+            } catch (error) {
+                if (!isCurrent()) return { success: true, skipped: true, code: 'cancelled' };
+                if (attempt !== 0 || responseStarted || classifyGoogleError(error).code !== 'model') throw error;
+                modelResolver.reject(apiKey, model, kind);
+                model = await modelResolver.resolve({
+                    apiKey,
+                    client: ai,
+                    selected: selectedModel,
+                    kind,
+                    signal: controller.signal,
+                    fallback: true,
+                    exclude: [model],
+                });
+                if (!isCurrent()) return { success: true, skipped: true, code: 'cancelled' };
+                sendToRenderer('update-status', 'Selected model unavailable; using a compatible Gemini model...');
             }
         }
 
@@ -1248,6 +1295,8 @@ async function sendImageToGeminiHttp(base64Data, prompt, { testReview = false } 
                 code: 'empty_response',
             };
         }
+        incrementLimitCount(model);
+        modelResolver.remember(apiKey, selectedModel, model, kind);
         if (!testReview) saveScreenAnalysis(prompt, fullText, model);
 
         return { success: true, text: fullText, model: model };

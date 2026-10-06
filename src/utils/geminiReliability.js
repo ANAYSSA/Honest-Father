@@ -13,7 +13,12 @@ function classifyGoogleError(error = {}) {
     const retryMatch = message.match(/retry(?:\s+in|Delay["':\s]+)\s*([\d.]+)s/i);
     const retryAfterMs = retryMatch ? Math.ceil(Number(retryMatch[1]) * 1000) : 60000;
 
-    if ([401, 403].includes(status) || /api.?key|unauthenticated|permission.denied|reported as leaked|invalid credentials/i.test(message)) {
+    if (
+        [401, 403].includes(status) ||
+        /api.?key.{0,30}(?:invalid|not valid|not found|expired|revoked|missing)|(?:invalid|missing).{0,20}api.?key|unauthenticated|permission.denied|reported as leaked|invalid credentials/i.test(
+            message
+        )
+    ) {
         return {
             code: 'authentication',
             retryable: false,
@@ -30,12 +35,18 @@ function classifyGoogleError(error = {}) {
             message: 'Gemini quota or billing limit reached. Requests are paused; check usage and billing in Google AI Studio before restarting.',
         };
     }
-    if (status === 404 || /model.+(?:not found|not supported|unavailable)|not found.+model/i.test(message)) {
+    if (
+        (status === 0 || [400, 404, 1008].includes(status)) &&
+        (/model.+(?:not found|not supported|does not support)|not found.+model|(?:unknown|invalid) model|(?:unsupported|not supported).+(?:model|generateContent|bidiGenerateContent)/i.test(
+            message
+        ) ||
+            (status === 404 && /model.+unavailable/i.test(message)))
+    ) {
         return {
             code: 'model',
             retryable: false,
-            cooldownMs: Infinity,
-            message: 'The selected Gemini model is unavailable for this key. Choose a supported model in Home and start again.',
+            cooldownMs: 10000,
+            message: 'Gemini could not use a compatible model for this request. Check model access in Google AI Studio and try again.',
         };
     }
     if ([400, 1007, 1008, 1009].includes(status) || /invalid.argument|unsupported|policy violation/i.test(message)) {

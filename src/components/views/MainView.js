@@ -732,8 +732,8 @@ export class MainView extends LitElement {
         this._geminiKey = '';
         this._groqKey = '';
         this._openaiKey = '';
-        this._geminiLiveModel = 'gemini-3.8-live';
-        this._geminiImageModel = 'gemini-3.1-flash-lite';
+        this._geminiLiveModel = 'auto';
+        this._geminiImageModel = 'auto';
         this._groqModel = 'qwen/qwen3.6-27b';
         this._groqImageModel = 'qwen/qwen3.6-27b';
         this._disableGroqThinking = true;
@@ -773,8 +773,8 @@ export class MainView extends LitElement {
             this._geminiKey = (await cheatingDaddy.storage.getApiKey().catch(() => '')) || '';
             this._groqKey = (await cheatingDaddy.storage.getGroqApiKey().catch(() => '')) || '';
             this._openaiKey = creds.openaiKey || '';
-            this._geminiLiveModel = config.geminiLiveModel || 'gemini-3.8-live';
-            this._geminiImageModel = config.geminiImageModel || 'gemini-3.1-flash-lite';
+            this._geminiLiveModel = config.geminiLiveModel || 'auto';
+            this._geminiImageModel = config.geminiImageModel || 'auto';
             this._groqModel = config.groqModel || 'qwen/qwen3.6-27b';
             this._groqImageModel = config.groqImageModel || 'qwen/qwen3.6-27b';
             this._disableGroqThinking = config.disableGroqThinking === true;
@@ -1213,13 +1213,13 @@ export class MainView extends LitElement {
                     <div class="form-group">
                         <label class="form-label">Gemini Live Model</label>
                         <input type="text" .value=${this._geminiLiveModel} @input=${e => this._saveGeminiLiveModel(e.target.value)} />
-                        <div class="form-hint">Use a Live model available to your API project.</div>
+                        <div class="form-hint">Use auto to choose an available Live model, or enter a model ID.</div>
                     </div>
                     <div class="form-group">
                         <label class="form-label">Gemini Screenshot Model</label>
                         <input type="text" .value=${this._geminiImageModel} @input=${e => this._saveGeminiImageModel(e.target.value)} />
                         <div class="form-hint">
-                            Used for screenshots when a Groq key is not configured. Quotas depend on your API project and model.
+                            Use auto to choose an available screenshot model, or enter a model ID. Used when a Groq key is not configured.
                         </div>
                     </div>
                 </div>

@@ -8,6 +8,7 @@ const { EventEmitter } = require('node:events');
 function harness({ platform = 'win32', permissionStatus = 'unknown', permissionThrows = false } = {}) {
     const handlers = new Map();
     const calls = [];
+    const endRequests = [];
     const ipcMain = new EventEmitter();
     ipcMain.handle = (channel, handler) => handlers.set(channel, handler);
     ipcMain.removeHandler = channel => handlers.delete(channel);
@@ -21,9 +22,11 @@ function harness({ platform = 'win32', permissionStatus = 'unknown', permissionT
             calls.push('begin');
             return { success: true };
         },
-        end: () => {
+        end: (reason, restoreMain = true) => {
             active = false;
             calls.push('end');
+            endRequests.push({ reason, restoreMain });
+            return { success: true };
         },
         toggle: () => {
             calls.push('toggle');
@@ -113,7 +116,7 @@ function harness({ platform = 'win32', permissionStatus = 'unknown', permissionT
     });
     const window = module.exports.createWindow(() => {}, sessionRef);
     const trusted = { sender: window.webContents, senderFrame: window.webContents.mainFrame };
-    return { window, handlers, calls, overlay, trusted, actions, ipcMain };
+    return { window, handlers, calls, endRequests, overlay, trusted, actions, ipcMain };
 }
 
 test('review IPC rejects another window and a child frame, and visibility routes to the active overlay', async () => {
@@ -131,6 +134,28 @@ test('review IPC rejects another window and a child frame, and visibility routes
     h.actions.toggleVisibility();
     assert.equal(h.window.visible, false);
     assert.equal(h.calls.at(-1), 'hide-main');
+});
+
+test('only the trusted main frame may request a silent review end and malformed visibility options are rejected', () => {
+    const h = harness();
+    const handler = h.handlers.get('review:end');
+    h.handlers.get('review:begin')(h.trusted);
+    for (const event of [{ sender: {} }, { sender: h.window.webContents, senderFrame: {} }]) {
+        assert.equal(handler(event, { silent: true }).success, false);
+    }
+    for (const options of [null, true, 'silent', [], { silent: 1 }, { silent: 'true' }, { silent: true, other: true }]) {
+        assert.equal(handler(h.trusted, options).success, false);
+    }
+    assert.equal(h.overlay.isActive(), true);
+    assert.deepEqual(h.endRequests, []);
+    assert.equal(handler(h.trusted, { silent: true }).success, true);
+    assert.equal(h.endRequests.at(-1).restoreMain, false);
+    h.handlers.get('review:begin')(h.trusted);
+    assert.equal(handler(h.trusted).success, true);
+    assert.equal(h.endRequests.at(-1).restoreMain, true, 'An explicit End Session keeps the original controls behavior');
+    h.handlers.get('review:begin')(h.trusted);
+    assert.equal(handler(h.trusted, { silent: false }).success, true);
+    assert.equal(h.endRequests.at(-1).restoreMain, true);
 });
 
 test('closing the main window aborts a pending review provider before removing overlay and IPC handlers', () => {

@@ -9,8 +9,8 @@ const DEFAULT_CONFIG = {
     configVersion: CONFIG_VERSION,
     onboarded: false,
     layout: 'normal',
-    geminiLiveModel: 'gemini-3.8-live',
-    geminiImageModel: 'gemini-3.1-flash-lite',
+    geminiLiveModel: 'auto',
+    geminiImageModel: 'auto',
     groqModel: 'qwen/qwen3.6-27b',
     groqImageModel: 'qwen/qwen3.6-27b',
     disableGroqThinking: true,
@@ -167,15 +167,9 @@ function initializeStorage() {
 
 function getConfig() {
     const saved = readJsonFile(getConfigPath(), {});
-    const config = { ...DEFAULT_CONFIG, ...saved };
-    if (
-        ['gemini-2.0-flash-live-001', 'gemini-2.5-flash-preview-native-audio-dialog', 'gemini-3.1-flash-live-preview'].includes(
-            config.geminiLiveModel
-        )
-    ) {
-        config.geminiLiveModel = DEFAULT_CONFIG.geminiLiveModel;
-    }
-    return config;
+    // Availability is checked against this API project's catalogue at request time.
+    // Keep explicit selections so a valid custom model survives an app update.
+    return { ...DEFAULT_CONFIG, ...saved };
 }
 
 function setConfig(config) {

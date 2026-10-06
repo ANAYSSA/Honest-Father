@@ -317,7 +317,7 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
         mediaStream.getVideoTracks().forEach(track =>
             track.addEventListener('ended', () => {
                 if (generation === captureGeneration) {
-                    stopCapture();
+                    stopCapture({ silentReviewEnd: true });
                     ipcRenderer.invoke('close-session', { silent: true }).catch(console.error);
                     cheatingDaddyApp.handleSessionEnded('Screen capture stopped. Start a new session to continue.');
                 }
@@ -392,7 +392,7 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
         return true;
     } catch (error) {
         if (generation !== captureGeneration) return false;
-        stopCapture();
+        stopCapture({ silentReviewEnd: true });
         cheatingDaddy.setStatus(`Error: Capture could not start: ${error.message}`);
         return false;
     }
@@ -756,12 +756,15 @@ async function captureManualScreenshot(imageQuality = null) {
 // Expose functions to global scope for external access
 window.captureManualScreenshot = captureManualScreenshot;
 
-function stopCapture() {
+function stopCapture(options) {
     captureGeneration += 1;
     screenshotRequest?.cancelFrameWait?.();
     stopReviewWatchdog();
     reviewQuestionCache = [];
-    if (captureTestReview) ipcRenderer.invoke('review:end').catch(console.error);
+    if (captureTestReview) {
+        const endArgs = options?.silentReviewEnd === true ? [{ silent: true }] : [];
+        ipcRenderer.invoke('review:end', ...endArgs).catch(console.error);
+    }
     captureTestReview = false;
     captureScreenOnly = false;
     if (screenshotInterval) {
@@ -820,10 +823,10 @@ function stopCapture() {
 
 ipcRenderer.on('provider-session-ended', (event, data) => {
     if (captureScreenOnly && !(captureTestReview && data?.code === 'test_review')) return;
-    stopCapture();
+    stopCapture({ silentReviewEnd: true });
     cheatingDaddyApp.handleSessionEnded(data?.reason || 'Session ended. Start a new session to continue.');
 });
-window.addEventListener('beforeunload', stopCapture);
+window.addEventListener('beforeunload', () => stopCapture({ silentReviewEnd: true }));
 
 // Send text message to Gemini
 async function sendTextMessage(text) {

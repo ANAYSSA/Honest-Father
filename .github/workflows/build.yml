@@ -76,6 +76,6 @@ jobs:
                   HF_TAG: ${{ github.ref_name }}
               run: |
                   if ! gh release view "$HF_TAG" >/dev/null 2>&1; then
-                      gh release create "$HF_TAG" --verify-tag --title "Honest Father $HF_TAG" --notes-file RELEASE_NOTES.md
+                      gh release create "$HF_TAG" --verify-tag --draft --title "Honest Father $HF_TAG" --notes-file RELEASE_NOTES.md
                   fi
                   gh release upload "$HF_TAG" release-assets/* --clobber

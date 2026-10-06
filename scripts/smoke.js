@@ -232,6 +232,29 @@ app.whenReady().then(async () => {
         assert.equal(manager.toggle().visible, false);
         assert.equal(manager.moveAnswer(token, { x: 0, y: -20 }).visible, false, 'Local scrolling respects a hidden mark');
         assert.equal(manager.toggle().visible, true);
+        assert.equal(manager.toggle().visible, false);
+        assert.equal(manager.status('Error: Synthetic provider failure.').success, true);
+        assert.equal(overlay.isVisible(), false, 'A review error never auto-reveals the hidden overlay');
+        assert.equal(window.isVisible(), false, 'A review error never auto-reveals the main window');
+        assert.equal(manager.toggle().visible, true, 'The visibility shortcut deliberately reveals a stored error');
+        const notice = await overlay.webContents.executeJavaScript(`({
+            text: document.getElementById('notice').textContent,
+            hidden: document.getElementById('notice').hidden,
+            rings: document.querySelectorAll('.answer-ring').length
+        })`);
+        assert.equal(notice.text, 'Error: Synthetic provider failure.');
+        assert.equal(notice.hidden, false);
+        assert.equal(notice.rings, 0, 'An error removes previous answer rings');
+        assert.equal(manager.toggle().visible, false, 'The next visibility shortcut hides the stored error');
+        assert.equal(manager.moveAnswer(token, { x: 0, y: 0 }).visible, false, 'Late tracking cannot replace or reveal an error');
+        const afterTracking = await overlay.webContents.executeJavaScript(`({
+            text: document.getElementById('notice').textContent,
+            rings: document.querySelectorAll('.answer-ring').length
+        })`);
+        assert.equal(afterTracking.text, 'Error: Synthetic provider failure.');
+        assert.equal(afterTracking.rings, 0);
+        assert.equal(overlay.isVisible(), false);
+        assert.equal(window.isVisible(), false);
         if (process.platform === 'darwin') assert.equal(app.dock.isVisible(), false, 'Overlay never restores the Dock icon');
         manager.end();
         assert.equal(BrowserWindow.getAllWindows().length, 1, 'Ending review destroys its overlay');

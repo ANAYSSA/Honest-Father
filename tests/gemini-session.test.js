@@ -5,9 +5,10 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const reliability = require('../src/utils/geminiReliability');
+const geminiModels = require('../src/utils/geminiModels');
 
 async function flush() {
-    for (let i = 0; i < 12; i++) await Promise.resolve();
+    for (let i = 0; i < 32; i++) await Promise.resolve();
 }
 
 function harness({
@@ -19,6 +20,9 @@ function harness({
     fetch: fetchMock = null,
     groqKey = '',
     reviewOverlay = null,
+    catalogue = null,
+    catalogueError = null,
+    listModels = null,
 } = {}) {
     let now = 0;
     let nextTimer = 0;
@@ -51,6 +55,7 @@ function harness({
     const connections = [];
     const clients = [];
     const requests = [];
+    const catalogueRequests = [];
     const children = [];
     const stored = {
         apiKey: 'unit-test-key',
@@ -84,6 +89,18 @@ function harness({
                 },
             };
             this.models = {
+                list: async params => {
+                    catalogueRequests.push(params);
+                    if (listModels) return listModels(params, catalogueRequests.length);
+                    if (catalogueError) throw catalogueError;
+                    return (async function* () {
+                        yield* catalogue || [
+                            { name: 'models/gemini-3.1-flash-lite', supportedActions: ['generateContent'] },
+                            { name: 'models/gemini-3.5-flash-lite', supportedActions: ['generateContent'] },
+                            { name: 'models/gemini-3.8-live', supportedActions: ['bidiGenerateContent'] },
+                        ];
+                    })();
+                },
                 generateContentStream: async params => {
                     requests.push(params);
                     return stream
@@ -123,7 +140,7 @@ function harness({
         './prompts': require('../src/utils/prompts'),
         './testReview': require('../src/utils/testReview'),
         '../storage': {
-            getAvailableModel: () => 'gemini-3.1-flash-lite',
+            getAvailableModel: () => stored.config.geminiImageModel || 'gemini-3.1-flash-lite',
             incrementLimitCount: () => {},
             getApiKey: () => stored.apiKey,
             getGroqApiKey: () => stored.groqKey,
@@ -147,6 +164,10 @@ function harness({
             createReconnectController: options => reliability.createReconnectController({ ...options, timers: clock, random: () => 0 }),
             createRequestGate: () => reliability.createRequestGate({ now: clock.now }),
             createPcmActivityFilter: () => reliability.createPcmActivityFilter({ now: clock.now }),
+        },
+        './geminiModels': {
+            ...geminiModels,
+            createGeminiModelResolver: options => geminiModels.createGeminiModelResolver({ now: clock.now, ...options }),
         },
     };
     const module = { exports: {} };
@@ -185,6 +206,7 @@ function harness({
         connections,
         clients,
         requests,
+        catalogueRequests,
         children,
         stored,
         window,
@@ -715,4 +737,195 @@ test('provider notifications stay addressed to the registered main window when o
     const count = h.events.length;
     h.api.sendToRenderer('update-status', 'No orphan overlay message');
     assert.equal(h.events.length, count);
+});
+
+async function setupImageMode(options, testReview = false) {
+    const manager = testReview ? reviewManagerStub() : null;
+    const h = harness({ ...options, reviewOverlay: manager });
+    h.stored.config.geminiImageModel = options.selected || 'auto';
+    if (testReview) await startReview(h, manager);
+    else await h.invoke('initialize-screen-session');
+    const payload = testReview ? reviewPayload() : { data: Buffer.alloc(1600).toString('base64'), prompt: 'Solve the displayed question.' };
+    return { h, manager, request: () => h.invoke('send-image-content', payload) };
+}
+
+test('normal screenshots and Test Review replace a missing saved model before generation', async () => {
+    for (const testReview of [false, true]) {
+        const { h, request, manager } = await setupImageMode(
+            {
+                selected: 'gemini-3.1-flash-lite',
+                catalogue: [{ name: 'models/gemini-3.5-flash-lite', supportedActions: ['generateContent'] }],
+                stream: async function* () {
+                    yield { text: testReview ? reviewJson : '42' };
+                },
+            },
+            testReview
+        );
+        assert.equal((await request()).success, true);
+        assert.deepEqual(
+            h.requests.map(item => item.model),
+            ['gemini-3.5-flash-lite']
+        );
+        assert.equal(h.catalogueRequests.length, 1);
+        if (testReview) assert.equal(manager.cached.length, 1);
+    }
+});
+
+test('both screenshot modes rotate once on explicit model rejection before streaming and remember the replacement', async () => {
+    for (const testReview of [false, true]) {
+        const { h, request } = await setupImageMode(
+            {
+                selected: 'gemini-3.1-flash-lite',
+                stream: async function* (params) {
+                    if (params.model === 'gemini-3.1-flash-lite') throw { status: 404, message: 'models/gemini-3.1-flash-lite is not found' };
+                    yield { text: testReview ? reviewJson : '42' };
+                },
+            },
+            testReview
+        );
+        assert.equal((await request()).success, true);
+        assert.deepEqual(
+            h.requests.map(item => item.model),
+            ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite']
+        );
+        assert.equal(h.catalogueRequests.length, 2);
+        assert.equal((await request()).success, true);
+        assert.equal(h.requests.at(-1).model, 'gemini-3.5-flash-lite');
+        assert.equal(h.requests.length, 3);
+        assert.equal(h.catalogueRequests.length, 2);
+    }
+});
+
+test('fallback excludes the rejected ID even after initial catalogue network failure', async () => {
+    const { h, request } = await setupImageMode({
+        selected: 'gemini-3.5-flash-lite',
+        listModels: async (_params, count) => {
+            if (count === 1) throw new Error('fetch failed');
+            return (async function* () {
+                yield { name: 'models/gemini-3.5-flash-lite', supportedActions: ['generateContent'] };
+                yield { name: 'models/gemini-3.1-flash-lite', supportedActions: ['generateContent'] };
+            })();
+        },
+        stream: async function* (params) {
+            if (params.model === 'gemini-3.5-flash-lite') throw { status: 404, message: 'models/gemini-3.5-flash-lite is not found' };
+            yield { text: '42' };
+        },
+    });
+    assert.equal((await request()).success, true);
+    assert.deepEqual(
+        h.requests.map(item => item.model),
+        ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite']
+    );
+    assert.equal(h.catalogueRequests.length, 2);
+});
+
+test('metadata or text already streamed prevents any model retry in either screenshot mode', async () => {
+    for (const testReview of [false, true]) {
+        for (const chunk of [{ usageMetadata: { promptTokenCount: 10 } }, { text: 'Partial response' }]) {
+            const { h, request } = await setupImageMode(
+                {
+                    stream: async function* () {
+                        yield chunk;
+                        throw { status: 404, message: 'models/selected is not found' };
+                    },
+                },
+                testReview
+            );
+            assert.equal((await request()).success, false);
+            assert.equal(h.requests.length, 1);
+            assert.equal(h.catalogueRequests.length, 1);
+        }
+    }
+});
+
+test('auth, quota, non-model404 and overloaded503 never cause a second generation', async () => {
+    for (const error of [
+        { status: 401, message: 'models/selected is not found' },
+        { status: 403, message: 'Model permission denied' },
+        { status: 429, message: 'Model quota exhausted' },
+        { status: 404, message: 'File not found' },
+        { status: 503, message: 'The model is unavailable due to overload' },
+    ]) {
+        const { h, request } = await setupImageMode({
+            stream: async function* () {
+                throw error;
+            },
+        });
+        assert.equal((await request()).success, false);
+        assert.equal(h.requests.length, 1);
+        assert.equal(h.catalogueRequests.length, 1);
+    }
+    const { h, request } = await setupImageMode({ catalogueError: { status: 429, message: 'Quota exhausted' } });
+    assert.equal((await request()).code, 'quota');
+    assert.equal(h.requests.length, 0);
+    const unavailable = await setupImageMode({ catalogue: [{ name: 'models/embedding-001', supportedActions: ['embedContent'] }] });
+    const result = await unavailable.request();
+    assert.equal(result.code, 'model');
+    assert.match(result.error, /compatible model/);
+    assert.equal(unavailable.h.requests.length, 0);
+});
+
+test('auto model cache is scoped to normalized keys and expires without sending literal auto', async () => {
+    const { h, request } = await setupImageMode({});
+    h.stored.apiKey = '  fake-key-A  ';
+    assert.equal((await request()).success, true);
+    assert.equal((await request()).success, true);
+    assert.equal(h.catalogueRequests.length, 1);
+    assert.equal(h.clients[0].apiKey, 'fake-key-A');
+    h.stored.apiKey = 'fake-key-B';
+    assert.equal((await request()).success, true);
+    assert.equal(h.catalogueRequests.length, 2);
+    await h.clock.advance(600001);
+    assert.equal((await request()).success, true);
+    assert.equal(h.catalogueRequests.length, 3);
+    assert.ok(h.requests.every(item => item.model === 'gemini-3.5-flash-lite'));
+});
+
+test('closing during model discovery aborts it and cannot submit a late image request', async () => {
+    let finish;
+    let signal;
+    const pending = new Promise(resolve => (finish = resolve));
+    const { h, request } = await setupImageMode({
+        listModels: params => {
+            signal = params.config.abortSignal;
+            return pending;
+        },
+    });
+    const result = request();
+    await flush();
+    await h.invoke('close-session', { silent: true });
+    assert.equal(signal.aborted, true);
+    finish(
+        (async function* () {
+            yield { name: 'models/gemini-3.5-flash-lite', supportedActions: ['generateContent'] };
+        })()
+    );
+    assert.equal((await result).code, 'cancelled');
+    assert.equal(h.requests.length, 0);
+});
+
+test('automatic Live model selection requires bidi capability and never submits literal auto', async () => {
+    const h = harness({
+        catalogue: [
+            { name: 'models/gemini-3.5-flash-lite', supportedActions: ['generateContent'] },
+            { name: 'models/gemini-2.5-flash-native-audio-preview-12-2025', supportedActions: ['bidiGenerateContent'] },
+        ],
+    });
+    h.stored.config.geminiLiveModel = 'auto';
+    assert.equal(await h.invoke('initialize-gemini', 'unit-test-key'), true);
+    assert.equal(h.connections[0].model, 'gemini-2.5-flash-native-audio-preview-12-2025');
+    h.api.closeActiveSession();
+});
+
+test('backend provider cleanup ends review without restoring hidden main-window controls', () => {
+    const visibility = [];
+    const h = harness({
+        reviewOverlay: {
+            isActive: () => true,
+            status() {},
+            end: (_reason, restoreControls = true) => visibility.push(restoreControls),
+        },
+    });
+    h.api.closeActiveSession();
+    assert.deepEqual(visibility, [false]);
 });

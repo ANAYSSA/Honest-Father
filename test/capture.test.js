@@ -5,12 +5,18 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 function makeStream(audio = false) {
+    const listeners = new Map();
     const videoTrack = {
         stopped: false,
         stop() {
             this.stopped = true;
         },
-        addEventListener() {},
+        addEventListener(event, callback) {
+            listeners.set(event, callback);
+        },
+        emitEnded() {
+            listeners.get('ended')?.();
+        },
         async applyConstraints(constraints) {
             this.constraints = constraints;
         },
@@ -43,6 +49,7 @@ function loadRenderer({
     frameClock,
 } = {}) {
     const listeners = new Map();
+    const windowListeners = new Map();
     const calls = [];
     const contexts = [];
     const warnings = [];
@@ -94,7 +101,7 @@ function loadRenderer({
             return { success: true };
         },
     };
-    const window = { addEventListener() {} };
+    const window = { addEventListener: (event, callback) => windowListeners.set(event, callback) };
     const context = vm.createContext({
         require: name => {
             if (name === './utils/reviewFrame') {
@@ -130,7 +137,7 @@ function loadRenderer({
         btoa: value => Buffer.from(value, 'binary').toString('base64'),
     });
     vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/utils/renderer.js'), 'utf8'), context);
-    return { api: window.cheatingDaddy, screenshot: window.captureManualScreenshot, listeners, calls, contexts, warnings, app };
+    return { api: window.cheatingDaddy, screenshot: window.captureManualScreenshot, listeners, windowListeners, calls, contexts, warnings, app };
 }
 
 test('microphone only on macOS skips native system capture and releases every resource', async () => {
@@ -1043,6 +1050,52 @@ test('review mode begins only after the screen stream is ready and requests no a
     assert.equal(harness.contexts.length, 0);
     harness.api.stopCapture();
     assert.equal(harness.calls.filter(call => call.channel === 'review:end').length, 1);
+    assert.equal(harness.calls.find(call => call.channel === 'review:end').args.length, 0, 'An explicit stop restores main controls');
+});
+
+test('review startup failure stops its stream and requests a silent end instead of revealing main controls', async () => {
+    const stream = makeStream();
+    const harness = loadRenderer({
+        platform: 'win32',
+        mediaDevices: { getDisplayMedia: async () => stream },
+        invokeOverride(channel) {
+            if (channel === 'review:begin') return { success: false, error: 'Overlay startup failed.' };
+        },
+    });
+    assert.equal(await harness.api.startCapture(5, 'medium', true, true), false);
+    assert.equal(stream.videoTrack.stopped, true);
+    assert.match(harness.app.status, /Overlay startup failed/);
+    const ends = harness.calls.filter(call => call.channel === 'review:end');
+    assert.equal(ends.length, 1);
+    assert.equal(ends[0].args[0].silent, true);
+});
+
+test('losing the review video stream quietly ends the session exactly once', async () => {
+    for (const platform of ['darwin', 'win32']) {
+        const stream = makeStream();
+        const harness = loadRenderer({ platform, mediaDevices: { getDisplayMedia: async () => stream } });
+        assert.equal(await harness.api.startCapture(5, 'medium', true, true), true);
+        stream.videoTrack.emitEnded();
+        assert.equal(stream.videoTrack.stopped, true);
+        assert.match(harness.app.ended, /Screen capture stopped/);
+        const ends = harness.calls.filter(call => call.channel === 'review:end');
+        assert.equal(ends.length, 1);
+        assert.equal(ends[0].args[0].silent, true);
+        assert.equal(harness.calls.find(call => call.channel === 'close-session').args[0].silent, true);
+        stream.videoTrack.emitEnded();
+        assert.equal(harness.calls.filter(call => call.channel === 'review:end').length, 1);
+    }
+});
+
+test('unloading the renderer quietly stops review even when the DOM event has unrelated properties', async () => {
+    const stream = makeStream();
+    const harness = loadRenderer({ mediaDevices: { getDisplayMedia: async () => stream } });
+    assert.equal(await harness.api.startCapture(5, 'medium', true, true), true);
+    harness.windowListeners.get('beforeunload')({ type: 'beforeunload', silentReviewEnd: 'false' });
+    assert.equal(stream.videoTrack.stopped, true);
+    const ends = harness.calls.filter(call => call.channel === 'review:end');
+    assert.equal(ends.length, 1);
+    assert.equal(ends[0].args[0].silent, true);
 });
 
 test('canceling review while screen permission is pending prevents a late overlay startup', async () => {
@@ -1440,6 +1493,7 @@ test('unexpected Test Review ending releases the screen, watchdog and local cach
     assert.equal(timers[0].cleared, true);
     assert.match(harness.app.ended, /Display configuration changed/);
     assert.equal(harness.calls.filter(call => call.channel === 'review:end').length, 1);
+    assert.equal(harness.calls.find(call => call.channel === 'review:end').args[0].silent, true);
     const previousMoves = harness.calls.filter(call => call.channel === 'review:move-answer').length;
     timers[0].callback();
     assert.equal(harness.calls.filter(call => call.channel === 'review:move-answer').length, previousMoves);
@@ -1472,5 +1526,6 @@ test('unexpected Test Review ending during an AI request blocks its late answer 
         false
     );
     assert.equal(harness.calls.filter(call => call.channel === 'review:end').length, 1);
+    assert.equal(harness.calls.find(call => call.channel === 'review:end').args[0].silent, true);
     assert.match(harness.app.ended, /overlay closed/);
 });

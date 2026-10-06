@@ -191,7 +191,18 @@ function setupWindowIpcHandlers(mainWindow, geminiSessionRef, screenCapture) {
         'review:hide-answer': token => reviewOverlay.hideAnswer(token),
         'review:clear': token => reviewOverlay.clear(token),
         'review:status': text => reviewOverlay.status(text),
-        'review:end': () => reviewOverlay.end(),
+        'review:end': (options = {}) => {
+            if (
+                !options ||
+                typeof options !== 'object' ||
+                Array.isArray(options) ||
+                Object.keys(options).some(key => key !== 'silent') ||
+                (options.silent !== undefined && typeof options.silent !== 'boolean')
+            ) {
+                return { success: false, error: 'Invalid test review end request.' };
+            }
+            return reviewOverlay.end(undefined, options.silent !== true);
+        },
     };
     for (const [channel, handler] of Object.entries(reviewHandlers)) {
         ipcMain.handle(channel, (event, ...args) => {

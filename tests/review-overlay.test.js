@@ -237,7 +237,7 @@ test('native bounds that remain clamped prevent drawing and end review after a s
     assert.equal(window.isVisible(), false);
     assert.equal(window.isDestroyed(), true);
     assert.equal(harness.manager.isActive(), false);
-    assert.equal(harness.mainWindow.isVisible(), true);
+    assert.equal(harness.mainWindow.isVisible(), false);
     assert.equal(harness.endings.length, 1);
     assert.match(harness.endings[0].reason, /could not cover the captured display/);
 });
@@ -277,6 +277,8 @@ test('new captures hide notices and main UI, invalidate old responses, and copy 
     const oldToken = harness.answer();
     harness.manager.showAnswer(oldToken, { x: 0, y: 0 });
     harness.manager.status('Try capturing a complete question.');
+    assert.equal(window.isVisible(), false);
+    assert.equal(harness.manager.toggle().visible, true);
     assert.equal(window.isVisible(), true);
     assert.equal(window.webContents.messages.at(-1).payload.kind, 'status');
     harness.mainWindow.showInactive();
@@ -353,6 +355,84 @@ test('without an answer the visibility shortcut opens main controls and can retu
     assert.match(window.webContents.messages.at(-1).payload.text, /Ctrl \+ Enter/);
     assert.equal(
         window.calls.some(call => call[0] === 'setHiddenInMissionControl'),
+        false
+    );
+});
+
+test('review startup and errors stay hidden until the user toggles their stored notice', () => {
+    for (const platform of ['darwin', 'win32']) {
+        const harness = makeHarness(platform);
+        const window = harness.start();
+        assert.equal(harness.manager.status('Error: The provider could not answer.').success, true);
+        assert.equal(window.isVisible(), false);
+        assert.equal(harness.mainWindow.isVisible(), false);
+        window.ready();
+        assert.equal(window.isVisible(), false, 'Preload readiness must not reveal a stored error');
+        assert.equal(
+            window.calls.some(call => call[0] === 'showInactive'),
+            false
+        );
+        assert.deepEqual(harness.manager.toggle(), { success: true, visible: true });
+        assert.equal(window.isVisible(), true);
+        assert.equal(harness.mainWindow.isVisible(), false);
+        assert.equal(window.webContents.messages.at(-1).payload.text, 'Error: The provider could not answer.');
+        assert.deepEqual(harness.manager.toggle(), { success: true, visible: false });
+        assert.equal(window.isVisible(), false);
+        assert.equal(harness.mainWindow.isVisible(), false);
+        assert.deepEqual(harness.manager.toggle(), { success: true, visible: true });
+        assert.equal(window.webContents.messages.at(-1).payload.kind, 'status');
+        assert.equal(harness.mainWindow.isVisible(), false, 'Repeated notice toggles never open main controls');
+    }
+});
+
+test('later errors respect deliberate notice visibility and a new capture resets that preference', () => {
+    const harness = makeHarness();
+    const window = harness.start();
+    window.ready();
+    harness.manager.status('Error: First failure.');
+    harness.manager.toggle();
+    harness.manager.status('Error: Updated failure.');
+    assert.equal(window.isVisible(), true);
+    assert.equal(window.webContents.messages.at(-1).payload.text, 'Error: Updated failure.');
+    harness.manager.toggle();
+    const revealCount = window.calls.filter(call => call[0] === 'showInactive').length;
+    harness.manager.status('Error: A failure received while hidden.');
+    assert.equal(window.isVisible(), false);
+    assert.equal(window.calls.filter(call => call[0] === 'showInactive').length, revealCount);
+    harness.manager.toggle();
+    assert.equal(window.isVisible(), true);
+    harness.manager.prepareCapture();
+    assert.equal(window.isVisible(), false);
+    harness.manager.status('Error: The next capture failed.');
+    assert.equal(window.isVisible(), false);
+    assert.equal(harness.mainWindow.isVisible(), false);
+});
+
+test('a stored error removes old marks and local tracking cannot replace or auto-reveal it', () => {
+    const harness = makeHarness();
+    const window = harness.start();
+    window.ready();
+    const token = harness.answer();
+    harness.manager.showAnswer(token, { x: 0, y: 0 });
+    assert.equal(window.isVisible(), true);
+    harness.manager.status('Error: The screenshot could not be processed.');
+    assert.equal(window.isVisible(), false, 'An answer being visible does not authorize an error pop-up');
+    const afterError = window.webContents.messages.length;
+    assert.equal(harness.manager.showAnswer(token).success, false, 'A notice revokes the old verified location');
+    assert.equal(harness.manager.moveAnswer(token, { x: 0, y: -20 }).visible, false);
+    assert.equal(window.webContents.messages.at(-1).payload.kind, 'status');
+    harness.manager.hideAnswer(token);
+    assert.equal(window.isVisible(), false);
+    assert.equal(window.webContents.messages.at(-1).payload.kind, 'status');
+    assert.equal(harness.manager.toggle().visible, true);
+    assert.equal(harness.manager.moveAnswer(token, { x: 0, y: -10 }).visible, true);
+    assert.equal(window.webContents.messages.at(-1).payload.kind, 'status');
+    harness.manager.toggle();
+    assert.equal(harness.manager.moveAnswer(token, { x: 0, y: 0 }).visible, false);
+    assert.equal(window.isVisible(), false);
+    assert.equal(harness.mainWindow.isVisible(), false);
+    assert.equal(
+        window.webContents.messages.slice(afterError).some(message => message.payload.kind === 'answer'),
         false
     );
 });
@@ -583,6 +663,25 @@ test('ending review destroys overlay, restores main, removes listeners, and does
     assert.equal(harness.screen.listenerCount('display-removed'), 1);
 });
 
+test('silent capture cleanup destroys the review overlay without revealing hidden main controls', () => {
+    const harness = makeHarness();
+    const window = harness.start();
+    window.ready();
+    harness.manager.status('Error: The screen stream stopped.');
+    assert.equal(harness.manager.end(undefined, false).success, true);
+    assert.equal(window.isDestroyed(), true);
+    assert.equal(harness.manager.isActive(), false);
+    assert.equal(harness.mainWindow.isVisible(), false);
+    assert.equal(
+        harness.mainWindow.calls.some(call => call[0] === 'showInactive'),
+        false
+    );
+    assert.equal(harness.screen.listenerCount('display-removed'), 0);
+    assert.equal(harness.endings.length, 0);
+    harness.manager.end();
+    assert.equal(harness.mainWindow.isVisible(), false, 'A second cleanup cannot undo the silent end');
+});
+
 test('display removal, changed origin/scale/rotation, and silent display changes end review and report the reason', () => {
     for (const change of [
         harness => harness.screen.emit('display-removed', {}, harness.displays[1]),
@@ -609,7 +708,7 @@ test('display removal, changed origin/scale/rotation, and silent display changes
         change(harness);
         assert.equal(harness.manager.isActive(), false);
         assert.equal(window.isDestroyed(), true);
-        assert.equal(harness.mainWindow.isVisible(), true);
+        assert.equal(harness.mainWindow.isVisible(), false);
         assert.equal(harness.endings.length, 1);
         assert.match(harness.endings[0].reason, /display/i);
     }
@@ -640,9 +739,23 @@ test('main and overlay renderer lifecycle failures clean up listeners and cannot
         fail(harness, window);
         assert.equal(harness.manager.isActive(), false);
         assert.equal(window.isDestroyed(), true);
+        assert.equal(harness.mainWindow.isVisible(), false);
         assert.equal(harness.screen.listenerCount('display-removed'), 0);
         assert.equal(harness.endings.length, 1);
     }
+});
+
+test('an unexpected end preserves deliberately visible controls without revealing a hidden main window', () => {
+    const harness = makeHarness();
+    const window = harness.start();
+    window.ready();
+    harness.manager.toggle();
+    assert.equal(harness.mainWindow.isVisible(), true);
+    const reveals = harness.mainWindow.calls.filter(call => call[0] === 'showInactive').length;
+    window.webContents.emit('render-process-gone');
+    assert.equal(harness.mainWindow.isVisible(), true);
+    assert.equal(harness.mainWindow.calls.filter(call => call[0] === 'showInactive').length, reveals);
+    assert.equal(harness.endings.length, 1);
 });
 
 test('a late load rejection from a destroyed overlay cannot end a newly started session', async () => {
