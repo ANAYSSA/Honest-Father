@@ -58,13 +58,15 @@ function loadStartup(platform) {
             createWindow() {
                 calls.push('create-window');
                 windowCount++;
-                createdWindow = { isDestroyed: () => false, webContents: new EventEmitter() };
+                createdWindow = { isDestroyed: () => windowCount === 0, show: () => calls.push('show-window'), webContents: new EventEmitter() };
                 return createdWindow;
             },
+            getReviewOverlay: () => null,
             disposeGlobalShortcuts: () => calls.push('dispose-shortcuts'),
         },
         './utils/gemini': {
             setupGeminiIpcHandlers() {},
+            setMainWindow() {},
             closeActiveSession: () => calls.push('close-session'),
             stopMacOSAudioCapture: () => calls.push('stop-audio'),
         },
@@ -127,6 +129,14 @@ test('a window finishing load after quit cannot change macOS activation or resta
     const callsAfterQuit = [...startup.calls];
     startup.completeLoad();
     assert.deepEqual(startup.calls, callsAfterQuit);
+});
+
+test('opening a running app reveals its existing main window without creating another Electron window', async () => {
+    const startup = loadStartup('darwin');
+    startup.ready();
+    await Promise.resolve();
+    startup.app.emit('activate');
+    assert.deepEqual(startup.calls.slice(4), ['show-window']);
 });
 
 test('Windows startup creates the window without using the macOS Dock API', async () => {

@@ -27,7 +27,18 @@ function makeStream(audio = false) {
     };
 }
 
-function loadRenderer({ platform = 'darwin', mode = 'mic_only', mediaDevices, invokeOverride, createElement, FileReaderClass } = {}) {
+function loadRenderer({
+    platform = 'darwin',
+    mode = 'mic_only',
+    mediaDevices,
+    invokeOverride,
+    createElement,
+    FileReaderClass,
+    reviewFrameChecker,
+    reviewTrackerBytes,
+    intervalTimers,
+    frameClock,
+} = {}) {
     const listeners = new Map();
     const calls = [];
     const contexts = [];
@@ -82,6 +93,19 @@ function loadRenderer({ platform = 'darwin', mode = 'mic_only', mediaDevices, in
     const window = { addEventListener() {} };
     const context = vm.createContext({
         require: name => {
+            if (name === './utils/reviewFrame') {
+                return {
+                    createReviewFrameTracker: (snapshot, answer) => ({
+                        retainedBytes: reviewTrackerBytes ?? snapshot.data.byteLength,
+                        locate(frame) {
+                            const result = reviewFrameChecker ? reviewFrameChecker(snapshot, frame, answer) : true;
+                            if (result === true) return { state: 'matched', offset: { x: 0, y: 0 }, reviewAnswer: answer };
+                            if (result === false) return { state: 'hidden', reason: 'unmatched' };
+                            return result;
+                        },
+                    }),
+                };
+            }
             assert.equal(name, 'electron');
             return { ipcRenderer };
         },
@@ -91,10 +115,11 @@ function loadRenderer({ platform = 'darwin', mode = 'mic_only', mediaDevices, in
         navigator: { mediaDevices },
         document: { querySelector: () => app, readyState: 'loading', addEventListener() {}, createElement },
         console: { log() {}, warn() {}, error() {} },
-        setInterval,
-        clearInterval,
+        setInterval: intervalTimers?.setInterval || setInterval,
+        clearInterval: intervalTimers?.clearInterval || clearInterval,
         setTimeout,
         clearTimeout,
+        performance: frameClock,
         Uint8Array,
         Int16Array,
         FileReader: FileReaderClass,
@@ -247,35 +272,77 @@ test('Windows microphone only does not request loopback audio', async () => {
     });
     assert.equal(await harness.api.startCapture(), true);
     assert.equal(options.audio, false);
+    assert.equal(options.video.frameRate, 1);
     harness.api.stopCapture();
 });
 
-function makeScreenshotEnvironment({ play, blob, read, width = 1920, height = 1080 } = {}) {
+function makeScreenshotEnvironment({ play, blob, read, frame, frameData, frameCallbacks = true, width = 1920, height = 1080 } = {}) {
     const canvases = [];
     const videos = [];
     const readers = [];
     const imageData = 'data:image/jpeg;base64,' + 'a'.repeat(160);
+    let frameTime = 0;
     return {
         canvases,
         videos,
         readers,
+        frameClock: { now: () => frameTime },
         createElement(type) {
             if (type === 'video') {
+                let callbackId = 0;
+                const callbacks = new Map();
+                const listeners = new Map();
                 const video = {
                     videoWidth: width,
                     videoHeight: height,
                     readyState: 2,
+                    currentTime: 0,
                     play: play || (() => Promise.resolve()),
                     pause() {},
-                    addEventListener() {},
-                    removeEventListener() {},
+                    addEventListener(type, callback) {
+                        if (!listeners.has(type)) listeners.set(type, new Set());
+                        listeners.get(type).add(callback);
+                    },
+                    removeEventListener(type, callback) {
+                        listeners.get(type)?.delete(callback);
+                    },
+                    emit(type) {
+                        if (type === 'timeupdate') frameTime += 200;
+                        for (const callback of listeners.get(type) || []) callback();
+                    },
+                    listeners,
+                    requestVideoFrameCallback(callback) {
+                        const id = ++callbackId;
+                        callbacks.set(id, callback);
+                        const complete = (metadata = {}) => {
+                            if (!callbacks.delete(id)) return;
+                            video.currentTime += 1;
+                            frameTime += 200;
+                            callback(frameTime, { mediaTime: video.currentTime, captureTime: frameTime, ...metadata });
+                        };
+                        if (frame) frame(complete);
+                        else setImmediate(complete);
+                        return id;
+                    },
+                    cancelVideoFrameCallback(id) {
+                        video.canceledFrames = (video.canceledFrames || 0) + 1;
+                        callbacks.delete(id);
+                    },
                 };
+                if (!frameCallbacks) delete video.requestVideoFrameCallback;
                 videos.push(video);
                 return video;
             }
             assert.equal(type, 'canvas');
             const canvas = {
-                getContext: () => ({ drawImage() {} }),
+                getContext: () => ({
+                    drawImage() {},
+                    getImageData: () => ({
+                        width: canvas.width,
+                        height: canvas.height,
+                        data: frameData ? frameData() : new Uint8ClampedArray(16),
+                    }),
+                }),
                 toBlob(callback, mimeType, quality) {
                     canvas.mimeType = mimeType;
                     canvas.quality = quality;
@@ -300,7 +367,7 @@ function makeScreenshotEnvironment({ play, blob, read, width = 1920, height = 10
     };
 }
 
-function screenshotHarness(environment, invokeOverride) {
+function screenshotHarness(environment, invokeOverride, reviewFrameChecker, intervalTimers, reviewTrackerBytes) {
     return loadRenderer({
         platform: 'win32',
         mediaDevices: {
@@ -314,6 +381,10 @@ function screenshotHarness(environment, invokeOverride) {
         createElement: environment.createElement,
         FileReaderClass: environment.FileReaderClass,
         invokeOverride,
+        reviewFrameChecker,
+        intervalTimers,
+        reviewTrackerBytes,
+        frameClock: environment.frameClock,
     });
 }
 
@@ -518,6 +589,447 @@ test('typed follow-up in screen-only mode analyzes the current screen without op
     assert.equal(request.args[0].prompt, 'Explain option B');
     assert.equal(
         harness.calls.some(call => call.channel === 'send-text-message' || call.channel === 'initialize-gemini'),
+        false
+    );
+    harness.api.stopCapture();
+});
+
+const REVIEW_CAPTURE_TOKEN = {
+    captureId: 'capture-1',
+    requestId: 'request-1',
+    display: { id: 'display-1', bounds: { x: -1920, y: 0, width: 1920, height: 1080 }, scaleFactor: 1, rotation: 0 },
+};
+const REVIEW_ANSWER = {
+    questionBox: [0, 0, 1000, 1000],
+    answers: [{ label: 'A', box: [100, 100, 130, 130] }],
+    confidence: 0.99,
+};
+
+function reviewHarness(environment, override, checker, intervalTimers, reviewTrackerBytes) {
+    return screenshotHarness(
+        environment,
+        (channel, args) => {
+            const result = override?.(channel, args);
+            if (result !== undefined) return result;
+            if (channel === 'review:prepare-capture') return REVIEW_CAPTURE_TOKEN;
+            if (channel === 'send-image-content') return { success: true, reviewAnswer: REVIEW_ANSWER };
+            if (channel === 'review:reuse-answer') return { success: true, reviewAnswer: REVIEW_ANSWER };
+        },
+        checker,
+        intervalTimers,
+        reviewTrackerBytes
+    );
+}
+
+test('screen initialization explicitly selects review or text without changing the profile', async () => {
+    const harness = loadRenderer();
+    await harness.api.initializeScreenSession('exam', true);
+    await harness.api.initializeScreenSession('interview');
+    const requests = harness.calls.filter(call => call.channel === 'initialize-screen-session');
+    assert.deepEqual(Array.from(requests[0].args), ['exam', '', 'test-review']);
+    assert.deepEqual(Array.from(requests[1].args), ['interview', '', 'text']);
+});
+
+test('review mode begins only after the screen stream is ready and requests no audio', async () => {
+    let release;
+    const stream = makeStream();
+    const permission = new Promise(resolve => {
+        release = resolve;
+    });
+    let options;
+    const harness = loadRenderer({
+        platform: 'win32',
+        mode: 'both',
+        mediaDevices: {
+            getDisplayMedia(value) {
+                options = value;
+                return permission;
+            },
+            getUserMedia() {
+                assert.fail('Test Review must not open the microphone');
+            },
+        },
+    });
+    const start = harness.api.startCapture(5, 'medium', false, true);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(
+        harness.calls.some(call => call.channel === 'review:begin'),
+        false
+    );
+    release(stream);
+    assert.equal(await start, true);
+    assert.equal(options.audio, false);
+    assert.equal(options.video.frameRate, 5);
+    assert.equal(harness.calls.filter(call => call.channel === 'review:begin').length, 1);
+    assert.equal(harness.contexts.length, 0);
+    harness.api.stopCapture();
+    assert.equal(harness.calls.filter(call => call.channel === 'review:end').length, 1);
+});
+
+test('canceling review while screen permission is pending prevents a late overlay startup', async () => {
+    let release;
+    const stream = makeStream();
+    const harness = loadRenderer({
+        mediaDevices: {
+            getDisplayMedia: () => new Promise(resolve => (release = resolve)),
+        },
+    });
+    const start = harness.api.startCapture(5, 'medium', true, true);
+    await new Promise(resolve => setImmediate(resolve));
+    harness.api.stopCapture();
+    release(stream);
+    assert.equal(await start, false);
+    assert.equal(stream.videoTrack.stopped, true);
+    assert.equal(
+        harness.calls.some(call => call.channel === 'review:begin'),
+        false
+    );
+});
+
+test('review capture waits for fresh frames, sends display geometry, and validates the screen before showing cached markers', async () => {
+    const pendingFrames = [];
+    let queuedOverlayVisible = true;
+    const environment = makeScreenshotEnvironment({
+        frame: callback => pendingFrames.push(callback),
+        frameData: () => Uint8ClampedArray.from([queuedOverlayVisible ? 1 : 2, 0, 0, 255]),
+    });
+    const comparisons = [];
+    const harness = reviewHarness(environment, undefined, (...args) => {
+        comparisons.push(args);
+        return true;
+    });
+    await harness.api.startCapture(5, 'medium', true, true);
+    const capture = harness.screenshot();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(pendingFrames.length, 1);
+    assert.equal(
+        harness.calls.some(call => call.channel === 'send-image-content'),
+        false
+    );
+    pendingFrames.shift()();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(
+        harness.calls.some(call => call.channel === 'send-image-content'),
+        false,
+        'The first queued frame may still contain the overlay'
+    );
+    assert.equal(environment.readers.length, 0);
+    queuedOverlayVisible = false;
+    pendingFrames.shift()();
+    await new Promise(resolve => setImmediate(resolve));
+    const request = harness.calls.find(call => call.channel === 'send-image-content').args[0];
+    assert.deepEqual(request.reviewCapture, REVIEW_CAPTURE_TOKEN);
+    assert.equal(request.imageWidth, 1920);
+    assert.equal(request.imageHeight, 1080);
+    assert.equal(request.prompt, undefined);
+    assert.equal(pendingFrames.length, 1);
+    assert.equal(
+        harness.calls.some(call => call.channel === 'review:show-answer'),
+        false
+    );
+    pendingFrames.shift()();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(
+        harness.calls.some(call => call.channel === 'review:show-answer'),
+        false,
+        'One queued status-notice frame must not publish markers'
+    );
+    pendingFrames.shift()();
+    assert.equal(await capture, true);
+    assert.equal(comparisons.length, 1);
+    assert.deepEqual(comparisons[0][2], REVIEW_ANSWER);
+    assert.equal(comparisons[0][0].data[0], 2);
+    assert.equal(harness.calls.filter(call => call.channel === 'review:show-answer').length, 1);
+    assert.equal(harness.app.responses.length, 0);
+    harness.api.stopCapture();
+});
+
+test('ending review during a fresh-frame wait cancels the callback and never sends the screenshot', async () => {
+    const pendingFrames = [];
+    const environment = makeScreenshotEnvironment({ frame: callback => pendingFrames.push(callback) });
+    const harness = reviewHarness(environment);
+    await harness.api.startCapture(5, 'medium', true, true);
+    const capture = harness.screenshot();
+    await new Promise(resolve => setImmediate(resolve));
+    harness.api.stopCapture();
+    assert.equal(await capture, false);
+    assert.equal(environment.videos[0].canceledFrames, 1);
+    pendingFrames[0]();
+    assert.equal(
+        harness.calls.some(call => call.channel === 'send-image-content' || call.channel === 'review:show-answer'),
+        false
+    );
+    assert.equal(harness.app.responses.length, 0);
+});
+
+test('review ignores a video frame captured before the window was hidden even when it arrives afterward', async () => {
+    const pendingFrames = [];
+    const environment = makeScreenshotEnvironment({ frame: callback => pendingFrames.push(callback) });
+    const harness = reviewHarness(environment);
+    await harness.api.startCapture(5, 'medium', true, true);
+    const capture = harness.screenshot();
+    await new Promise(resolve => setImmediate(resolve));
+    pendingFrames.shift()({ captureTime: -1 });
+    pendingFrames.shift()();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(
+        harness.calls.some(call => call.channel === 'send-image-content'),
+        false
+    );
+    pendingFrames.shift()();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(harness.calls.filter(call => call.channel === 'send-image-content').length, 1);
+    pendingFrames.shift()();
+    pendingFrames.shift()();
+    assert.equal(await capture, true);
+    harness.api.stopCapture();
+});
+
+test('canceling review after the first advancing frame cancels the second frame and cannot restart the wait', async () => {
+    const pendingFrames = [];
+    const environment = makeScreenshotEnvironment({ frame: callback => pendingFrames.push(callback) });
+    const harness = reviewHarness(environment);
+    await harness.api.startCapture(5, 'medium', true, true);
+    const capture = harness.screenshot();
+    await new Promise(resolve => setImmediate(resolve));
+    pendingFrames.shift()();
+    harness.api.stopCapture();
+    assert.equal(await capture, false);
+    assert.equal(environment.videos[0].canceledFrames, 1);
+    pendingFrames.shift()();
+    assert.equal(pendingFrames.length, 0);
+    assert.equal(
+        harness.calls.some(call => call.channel === 'send-image-content'),
+        false
+    );
+});
+
+test('an unmatched screen after AI processing keeps the cached review hidden for scroll-back without showing markers', async () => {
+    const environment = makeScreenshotEnvironment();
+    const harness = reviewHarness(environment, undefined, () => false);
+    await harness.api.startCapture(5, 'medium', true, true);
+    assert.equal(await harness.screenshot(), true);
+    assert.equal(
+        harness.calls.some(call => call.channel === 'review:show-answer'),
+        false
+    );
+    const hidden = harness.calls.find(call => call.channel === 'review:hide-answer');
+    assert.deepEqual(hidden.args[0], REVIEW_CAPTURE_TOKEN);
+    assert.equal(
+        harness.calls.some(call => call.channel === 'review:clear'),
+        false
+    );
+    assert.match(harness.app.status, /Question is off screen/);
+    assert.equal(harness.app.responses.length, 0);
+    harness.api.stopCapture();
+});
+
+test('review watchdog moves markers with scrolling, hides unmatched questions, and restores cached markers without AI calls', async () => {
+    const timers = [];
+    const intervalTimers = {
+        setInterval(callback, interval) {
+            assert.equal(interval, 500);
+            const timer = { callback, cleared: false };
+            timers.push(timer);
+            return timer;
+        },
+        clearInterval(timer) {
+            timer.cleared = true;
+        },
+    };
+    let location = { state: 'matched', offset: { x: 0, y: 0 }, reviewAnswer: REVIEW_ANSWER };
+    const harness = reviewHarness(makeScreenshotEnvironment(), undefined, () => location, intervalTimers);
+    await harness.api.startCapture(5, 'medium', true, true);
+    assert.equal(await harness.screenshot(), true);
+    const oldTimer = timers[0];
+    assert.equal(await harness.screenshot(), true);
+    assert.equal(oldTimer.cleared, true);
+    oldTimer.callback();
+    assert.equal(
+        harness.calls.some(call => call.channel === 'review:clear'),
+        false
+    );
+    location = { state: 'matched', offset: { x: 0, y: -25 }, reviewAnswer: REVIEW_ANSWER };
+    timers[1].callback();
+    timers[1].callback();
+    const moves = harness.calls.filter(call => call.channel === 'review:move-answer');
+    assert.equal(moves.length, 1);
+    assert.deepEqual(moves[0].args, [REVIEW_CAPTURE_TOKEN, location.offset]);
+    location = { state: 'hidden', reason: 'unmatched' };
+    timers[1].callback();
+    timers[1].callback();
+    assert.equal(harness.calls.filter(call => call.channel === 'review:hide-answer').length, 1);
+    assert.equal(timers[1].cleared, false);
+    assert.match(harness.app.status, /Question is off screen/);
+    location = { state: 'matched', offset: { x: 0, y: 0 }, reviewAnswer: REVIEW_ANSWER };
+    timers[1].callback();
+    assert.equal(harness.calls.filter(call => call.channel === 'review:move-answer').length, 2);
+    assert.equal(harness.calls.filter(call => call.channel === 'send-image-content').length, 1);
+    assert.equal(harness.calls.filter(call => call.channel === 'review:clear').length, 0);
+    harness.api.stopCapture();
+    assert.equal(timers[1].cleared, true);
+});
+
+test('review provider errors remain session status errors and never append a text response', async () => {
+    const harness = reviewHarness(makeScreenshotEnvironment(), channel => {
+        if (channel === 'send-image-content') return { success: false, error: 'Quota exhausted. Try another configured provider.' };
+    });
+    await harness.api.startCapture(5, 'medium', true, true);
+    assert.equal(await harness.screenshot(), false);
+    assert.match(harness.app.status, /Quota exhausted/);
+    assert.equal(harness.app.responses.length, 0);
+    assert.equal(
+        harness.calls.some(call => call.channel === 'review:show-answer'),
+        false
+    );
+    assert.equal(harness.calls.filter(call => call.channel === 'review:clear').length, 1);
+    harness.api.stopCapture();
+});
+
+test('canceling review during AI processing cannot display a late answer or start a watchdog', async () => {
+    let release;
+    const harness = reviewHarness(makeScreenshotEnvironment(), channel => {
+        if (channel === 'send-image-content') return new Promise(resolve => (release = resolve));
+    });
+    await harness.api.startCapture(5, 'medium', true, true);
+    const capture = harness.screenshot();
+    while (!release) await new Promise(resolve => setImmediate(resolve));
+    harness.api.stopCapture();
+    release({ success: true, reviewAnswer: REVIEW_ANSWER });
+    assert.equal(await capture, false);
+    assert.equal(
+        harness.calls.some(call => call.channel === 'review:show-answer'),
+        false
+    );
+    assert.equal(harness.app.responses.length, 0);
+});
+
+test('review falls back to advancing loaded video frames when requestVideoFrameCallback is unavailable', async () => {
+    const environment = makeScreenshotEnvironment({ frameCallbacks: false });
+    const advance = () =>
+        setImmediate(() => {
+            const video = environment.videos[0];
+            video.currentTime += 1;
+            video.emit('timeupdate');
+            setImmediate(() => {
+                video.currentTime += 1;
+                video.emit('timeupdate');
+            });
+        });
+    const harness = reviewHarness(environment, channel => {
+        if (channel === 'review:prepare-capture' || channel === 'send-image-content') advance();
+    });
+    await harness.api.startCapture(5, 'medium', true, true);
+    assert.equal(await harness.screenshot(), true);
+    assert.equal(harness.calls.filter(call => call.channel === 'send-image-content').length, 1);
+    assert.equal(
+        [...environment.videos[0].listeners.values()].every(listeners => listeners.size === 0),
+        true
+    );
+    harness.api.stopCapture();
+});
+
+test('canceling a fallback review frame wait removes its event listeners without sending an image', async () => {
+    const environment = makeScreenshotEnvironment({ frameCallbacks: false });
+    const harness = reviewHarness(environment);
+    await harness.api.startCapture(5, 'medium', true, true);
+    const capture = harness.screenshot();
+    await new Promise(resolve => setImmediate(resolve));
+    harness.api.stopCapture();
+    assert.equal(await capture, false);
+    assert.equal(
+        [...environment.videos[0].listeners.values()].every(listeners => listeners.size === 0),
+        true
+    );
+    assert.equal(
+        harness.calls.some(call => call.channel === 'send-image-content'),
+        false
+    );
+});
+
+test('a repeated practice question reuses a validated cached answer without JPEG encoding or an AI request', async () => {
+    let sequence = 0;
+    const environment = makeScreenshotEnvironment();
+    const harness = reviewHarness(environment, channel => {
+        if (channel === 'review:prepare-capture') return { ...REVIEW_CAPTURE_TOKEN, requestId: `request-${++sequence}` };
+    });
+    await harness.api.startCapture(5, 'medium', true, true);
+    assert.equal(await harness.screenshot(), true);
+    assert.equal(await harness.screenshot(), true);
+    const calls = harness.calls;
+    assert.equal(calls.filter(call => call.channel === 'send-image-content').length, 1);
+    assert.equal(environment.readers.length, 1);
+    assert.equal(environment.canvases[1].mimeType, undefined);
+    const reused = calls.find(call => call.channel === 'review:reuse-answer');
+    assert.equal(reused.args[0].requestId, 'request-2');
+    assert.equal(reused.args[1].requestId, 'request-1');
+    assert.deepEqual(reused.args[2], { x: 0, y: 0 });
+    assert.equal(calls.filter(call => call.channel === 'review:show-answer').length, 2);
+    harness.api.stopCapture();
+});
+
+test('canceling a cached review lookup cannot redraw an old answer or fall back to the provider', async () => {
+    let release;
+    let reusePending = false;
+    const harness = reviewHarness(makeScreenshotEnvironment(), channel => {
+        if (channel === 'review:reuse-answer' && reusePending) return new Promise(resolve => (release = resolve));
+    });
+    await harness.api.startCapture(5, 'medium', true, true);
+    assert.equal(await harness.screenshot(), true);
+    reusePending = true;
+    const capture = harness.screenshot();
+    while (!release) await new Promise(resolve => setImmediate(resolve));
+    harness.api.stopCapture();
+    release({ success: true, reviewAnswer: REVIEW_ANSWER });
+    assert.equal(await capture, false);
+    assert.equal(harness.calls.filter(call => call.channel === 'send-image-content').length, 1);
+    assert.equal(harness.calls.filter(call => call.channel === 'review:show-answer').length, 1);
+});
+
+test('a missing main-process cache entry falls back to exactly one provider request', async () => {
+    const harness = reviewHarness(makeScreenshotEnvironment(), channel => {
+        if (channel === 'review:reuse-answer') return { success: false, error: 'Cached answer is no longer available' };
+    });
+    await harness.api.startCapture(5, 'medium', true, true);
+    assert.equal(await harness.screenshot(), true);
+    assert.equal(await harness.screenshot(), true);
+    assert.equal(harness.calls.filter(call => call.channel === 'review:reuse-answer').length, 1);
+    assert.equal(harness.calls.filter(call => call.channel === 'send-image-content').length, 2);
+    harness.api.stopCapture();
+});
+
+test('local review cache retains at most three distinct questions and clears when the session stops', async () => {
+    let question = 1;
+    const environment = makeScreenshotEnvironment({ frameData: () => Uint8ClampedArray.from([question, 0, 0, 255]) });
+    const harness = reviewHarness(environment, undefined, (snapshot, frame) => snapshot.data[0] === frame.data[0]);
+    await harness.api.startCapture(5, 'medium', true, true);
+    for (question = 1; question <= 4; question++) assert.equal(await harness.screenshot(), true);
+    question = 2;
+    assert.equal(await harness.screenshot(), true);
+    assert.equal(harness.calls.filter(call => call.channel === 'send-image-content').length, 4);
+    question = 1;
+    assert.equal(await harness.screenshot(), true);
+    assert.equal(harness.calls.filter(call => call.channel === 'send-image-content').length, 5);
+    harness.api.stopCapture();
+    await harness.api.startCapture(5, 'medium', true, true);
+    assert.equal(await harness.screenshot(), true);
+    assert.equal(harness.calls.filter(call => call.channel === 'send-image-content').length, 6);
+    harness.api.stopCapture();
+});
+
+test('review cache respects the tracker retained-memory estimate within its 32 MB budget', async () => {
+    let question = 1;
+    const environment = makeScreenshotEnvironment({ frameData: () => Uint8ClampedArray.from([question, 0, 0, 255]) });
+    const harness = reviewHarness(environment, undefined, (snapshot, frame) => snapshot.data[0] === frame.data[0], undefined, 17 * 1024 * 1024);
+    await harness.api.startCapture(5, 'medium', true, true);
+    assert.equal(await harness.screenshot(), true);
+    question = 2;
+    assert.equal(await harness.screenshot(), true);
+    question = 1;
+    assert.equal(await harness.screenshot(), true);
+    assert.equal(harness.calls.filter(call => call.channel === 'send-image-content').length, 3);
+    assert.equal(
+        harness.calls.some(call => call.channel === 'review:reuse-answer'),
         false
     );
     harness.api.stopCapture();

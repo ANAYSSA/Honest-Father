@@ -18,6 +18,7 @@ function harness({
     platform = 'darwin',
     fetch: fetchMock = null,
     groqKey = '',
+    reviewOverlay = null,
 } = {}) {
     let now = 0;
     let nextTimer = 0;
@@ -120,6 +121,7 @@ function harness({
         },
         '../audioUtils': { saveDebugAudio: () => {} },
         './prompts': require('../src/utils/prompts'),
+        './testReview': require('../src/utils/testReview'),
         '../storage': {
             getAvailableModel: () => 'gemini-3.1-flash-lite',
             incrementLimitCount: () => {},
@@ -137,6 +139,7 @@ function harness({
             closeCloud: () => {},
             isCloudActive: () => false,
             setOnTurnComplete: () => {},
+            setRendererWindow: () => {},
         },
         './transportLogger': { startTransportLog: () => {}, logTransportEvent: () => {}, closeTransportLog: () => {} },
         './geminiReliability': {
@@ -169,8 +172,25 @@ function harness({
     vm.runInNewContext(fs.readFileSync(path.resolve(__dirname, '../src/utils/gemini.js'), 'utf8'), context);
     const api = module.exports;
     const ref = { current: null };
+    const window = electron.BrowserWindow.getAllWindows()[0];
+    window.webContents.mainFrame = {};
+    api.setMainWindow(window, reviewOverlay);
     api.setupGeminiIpcHandlers(ref);
-    return { api, ref, clock, events, connections, clients, requests, children, stored, invoke: (name, ...args) => handlers.get(name)({}, ...args) };
+    const event = { sender: window.webContents, senderFrame: window.webContents.mainFrame };
+    return {
+        api,
+        ref,
+        clock,
+        events,
+        connections,
+        clients,
+        requests,
+        children,
+        stored,
+        window,
+        invoke: (name, ...args) => handlers.get(name)(event, ...args),
+        invokeFrom: (name, sender, ...args) => handlers.get(name)(sender, ...args),
+    };
 }
 
 test('Live init waits for setup acknowledgement and uses the supported native-audio payload', async () => {
@@ -521,4 +541,178 @@ test('stop during native startup await cannot spawn an orphan and old child clos
     h.api.stopMacOSAudioCapture();
     assert.equal(h.children[1].kills.length, 1);
     assert.equal(h.events.filter(event => event.channel === 'provider-session-ended').length, 0);
+});
+
+const reviewJson = JSON.stringify({
+    question_box: [100, 100, 800, 800],
+    answers: [{ label: 'B', box: [350, 120, 375, 145] }],
+    confidence: 0.95,
+});
+
+function reviewManagerStub() {
+    const cached = [];
+    let active = true;
+    let current = 1;
+    return {
+        cached,
+        isActive: () => active,
+        end: () => {
+            active = false;
+        },
+        start: () => {
+            active = true;
+        },
+        status: () => {},
+        invalidate: () => {
+            current++;
+        },
+        validateCapture: token => (token?.requestId === current ? { success: true } : { success: false, error: 'Stale capture' }),
+        cacheAnswer(token, answer, dimensions) {
+            const valid = this.validateCapture(token);
+            if (valid.success && active) cached.push({ token, answer, dimensions });
+            return active ? valid : { success: false, error: 'Review ended' };
+        },
+    };
+}
+
+async function startReview(h, manager) {
+    assert.equal(await h.invoke('initialize-screen-session', 'interview', '', 'test-review'), true);
+    manager.start();
+}
+
+const reviewPayload = () => ({
+    data: Buffer.alloc(1200, 2).toString('base64'),
+    reviewCapture: { requestId: 1 },
+    imageWidth: 1920,
+    imageHeight: 1080,
+});
+
+test('test review caches complete validated JSON without streaming normal answers or starting Live/audio', async () => {
+    const manager = reviewManagerStub();
+    const h = harness({
+        reviewOverlay: manager,
+        stream: async function* () {
+            yield { text: reviewJson.slice(0, 60) };
+            yield { text: reviewJson.slice(60) };
+        },
+    });
+    await startReview(h, manager);
+    const result = await h.invoke('send-image-content', reviewPayload());
+    assert.equal(result.success, true);
+    assert.equal(result.reviewAnswer.answers[0].label, 'B');
+    assert.equal(manager.cached.length, 1);
+    assert.equal(h.connections.length, 0);
+    assert.equal(h.children.length, 0);
+    assert.equal(h.requests[0].config.responseMimeType, 'application/json');
+    assert.match(h.requests[0].config.systemInstruction, /radio button or checkbox/);
+    assert.equal(
+        h.events.some(event => ['new-response', 'update-response', 'save-screen-analysis'].includes(event.channel)),
+        false
+    );
+});
+
+test('malformed or uncertain review responses cannot be cached as visual choices', async () => {
+    for (const text of [reviewJson.slice(0, -2), '{"question_box":[0,0,0,0],"answers":[],"confidence":0}']) {
+        const manager = reviewManagerStub();
+        const h = harness({
+            reviewOverlay: manager,
+            stream: async function* () {
+                yield { text };
+            },
+        });
+        await startReview(h, manager);
+        const result = await h.invoke('send-image-content', reviewPayload());
+        assert.equal(result.success, false);
+        assert.equal(manager.cached.length, 0);
+    }
+});
+
+test('review screenshots from another window or child frame and stale tokens are rejected before provider calls', async () => {
+    const manager = reviewManagerStub();
+    const h = harness({ reviewOverlay: manager });
+    await startReview(h, manager);
+    for (const event of [
+        { sender: {}, senderFrame: {} },
+        { sender: h.window.webContents, senderFrame: {} },
+    ]) {
+        const result = await h.invokeFrom('send-image-content', event, reviewPayload());
+        assert.equal(result.success, false);
+    }
+    manager.invalidate();
+    assert.equal((await h.invoke('send-image-content', reviewPayload())).success, false);
+    assert.equal(h.requests.length, 0);
+});
+
+test('a review result arriving after a new capture cannot replace the cached answer', async () => {
+    const manager = reviewManagerStub();
+    let finish;
+    const ready = new Promise(resolve => {
+        finish = resolve;
+    });
+    const h = harness({
+        reviewOverlay: manager,
+        stream: async function* () {
+            await ready;
+            yield { text: reviewJson };
+        },
+    });
+    await startReview(h, manager);
+    const request = h.invoke('send-image-content', reviewPayload());
+    await flush();
+    manager.invalidate();
+    finish();
+    assert.equal((await request).success, false);
+    assert.equal(manager.cached.length, 0);
+});
+
+test('review results use the configured Groq image provider with the same strict response format', async () => {
+    const manager = reviewManagerStub();
+    const bodies = [];
+    const h = harness({
+        reviewOverlay: manager,
+        groqKey: 'unit-groq-key',
+        fetch: async (_url, options) => {
+            bodies.push(JSON.parse(options.body));
+            let read = false;
+            return {
+                ok: true,
+                status: 200,
+                body: {
+                    getReader: () => ({
+                        read: async () => {
+                            if (read) return { done: true };
+                            read = true;
+                            return {
+                                done: false,
+                                value: new TextEncoder().encode(
+                                    `data: ${JSON.stringify({ choices: [{ delta: { content: reviewJson }, finish_reason: 'stop' }] })}\n\n`
+                                ),
+                            };
+                        },
+                    }),
+                },
+            };
+        },
+    });
+    await startReview(h, manager);
+    const result = await h.invoke('send-image-content', reviewPayload());
+    assert.equal(result.success, true);
+    assert.equal(manager.cached.length, 1);
+    assert.equal(h.requests.length, 0);
+    assert.match(bodies[0].messages[0].content, /multiple-choice practice test/);
+    assert.equal(bodies[0].temperature, 0.1);
+    assert.equal(
+        h.events.some(event => ['new-response', 'update-response'].includes(event.channel)),
+        false
+    );
+});
+
+test('provider notifications stay addressed to the registered main window when overlays exist', () => {
+    const h = harness();
+    h.api.sendToRenderer('update-status', 'Main only');
+    assert.equal(h.events.at(-1).data, 'Main only');
+    h.api.setMainWindow(null);
+    const count = h.events.length;
+    h.api.sendToRenderer('update-status', 'No orphan overlay message');
+    assert.equal(h.events.length, count);
 });

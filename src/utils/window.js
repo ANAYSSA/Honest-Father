@@ -3,9 +3,15 @@ const path = require('node:path');
 const storage = require('../storage');
 const { getDefaultKeybinds, createShortcutRegistrar } = require('./keybinds');
 const { registerAutomaticScreenCapture } = require('./screenCapture');
+const { createReviewOverlay } = require('./reviewOverlay');
 const shortcutRegistrar = createShortcutRegistrar(globalShortcut, process.platform);
 
 let mouseEventsIgnored = false;
+let currentReviewOverlay = null;
+
+function getReviewOverlay() {
+    return currentReviewOverlay;
+}
 
 const DEFAULT_MAIN_WINDOW_SIZE = { width: 1100, height: 800 };
 const MIN_WINDOW_SIZE = { width: 700, height: 320 };
@@ -36,7 +42,29 @@ function createWindow(sendToRenderer, geminiSessionRef) {
     });
 
     const { session, desktopCapturer } = require('electron');
-    registerAutomaticScreenCapture(session.defaultSession, { desktopCapturer, screen, mainWindow });
+    currentReviewOverlay?.end();
+    const reviewOverlay = createReviewOverlay({
+        BrowserWindow,
+        screen,
+        mainWindow,
+        onWindowCreated: () => {
+            if (process.platform === 'darwin') {
+                app.setActivationPolicy('accessory');
+                app.dock.hide();
+            }
+        },
+        onEnd: ({ reason }) => {
+            require('./gemini').closeActiveSession(geminiSessionRef);
+            sendToRenderer('provider-session-ended', { reason: reason || 'The review session ended.' });
+        },
+    });
+    currentReviewOverlay = reviewOverlay;
+    registerAutomaticScreenCapture(session.defaultSession, {
+        desktopCapturer,
+        screen,
+        mainWindow,
+        onSourceSelected: source => reviewOverlay.recordSource(source),
+    });
 
     mainWindow.setContentProtection(true);
     if (process.platform === 'win32') {
@@ -95,6 +123,10 @@ function updateGlobalShortcuts(keybinds, mainWindow, sendToRenderer, geminiSessi
         moveRight: () => moveWindow(moveIncrement, 0),
         toggleVisibility: () => {
             if (mainWindow.isDestroyed()) return;
+            if (currentReviewOverlay?.isActive()) {
+                currentReviewOverlay.toggle();
+                return;
+            }
             if (mainWindow.isVisible()) mainWindow.hide();
             else mainWindow.showInactive();
         },
@@ -147,6 +179,26 @@ function disposeGlobalShortcuts() {
 }
 
 function setupWindowIpcHandlers(mainWindow) {
+    const reviewOverlay = currentReviewOverlay;
+    const isTrusted = event =>
+        !mainWindow.isDestroyed() && event.sender === mainWindow.webContents && event.senderFrame === mainWindow.webContents.mainFrame;
+    const reviewHandlers = {
+        'review:begin': () => reviewOverlay.begin(),
+        'review:prepare-capture': () => reviewOverlay.prepareCapture(),
+        'review:show-answer': (token, offset) => reviewOverlay.showAnswer(token, offset),
+        'review:reuse-answer': (token, previousToken, offset) => reviewOverlay.reuseAnswer(token, previousToken, offset),
+        'review:move-answer': (token, offset) => reviewOverlay.moveAnswer(token, offset),
+        'review:hide-answer': token => reviewOverlay.hideAnswer(token),
+        'review:clear': token => reviewOverlay.clear(token),
+        'review:status': text => reviewOverlay.status(text),
+        'review:end': () => reviewOverlay.end(),
+    };
+    for (const [channel, handler] of Object.entries(reviewHandlers)) {
+        ipcMain.handle(channel, (event, ...args) => {
+            if (!isTrusted(event)) return { success: false, error: 'Invalid test review request.' };
+            return handler(...args);
+        });
+    }
     const onViewChanged = (event, view) => {
         if (event.sender !== mainWindow.webContents) return;
         if (!mainWindow.isDestroyed()) {
@@ -154,7 +206,10 @@ function setupWindowIpcHandlers(mainWindow) {
 
             if (process.platform !== 'win32') {
                 mainWindow.setAlwaysOnTop(isLiveMode);
-                mainWindow.setVisibleOnAllWorkspaces(isLiveMode, { visibleOnFullScreen: isLiveMode });
+                mainWindow.setVisibleOnAllWorkspaces(isLiveMode, {
+                    visibleOnFullScreen: isLiveMode,
+                    ...(process.platform === 'darwin' ? { skipTransformProcessType: true } : {}),
+                });
             }
 
             if (!isLiveMode) {
@@ -172,10 +227,12 @@ function setupWindowIpcHandlers(mainWindow) {
 
     ipcMain.handle('toggle-window-visibility', async event => {
         try {
+            if (!isTrusted(event)) return { success: false, error: 'Invalid window request.' };
             if (mainWindow.isDestroyed()) {
                 return { success: false, error: 'Window has been destroyed' };
             }
 
+            if (reviewOverlay?.isActive()) return reviewOverlay.toggle();
             if (mainWindow.isVisible()) {
                 mainWindow.hide();
             } else {
@@ -192,6 +249,9 @@ function setupWindowIpcHandlers(mainWindow) {
         ipcMain.removeListener('view-changed', onViewChanged);
         ipcMain.removeHandler('window-minimize');
         ipcMain.removeHandler('toggle-window-visibility');
+        for (const channel of Object.keys(reviewHandlers)) ipcMain.removeHandler(channel);
+        reviewOverlay?.end();
+        if (currentReviewOverlay === reviewOverlay) currentReviewOverlay = null;
         // Keep the global Quit shortcut available on macOS after the last window closes.
         setShortcutsPaused(false);
         mouseEventsIgnored = false;
@@ -199,6 +259,7 @@ function setupWindowIpcHandlers(mainWindow) {
 }
 
 module.exports = {
+    getReviewOverlay,
     createWindow,
     getDefaultKeybinds,
     updateGlobalShortcuts,

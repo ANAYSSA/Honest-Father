@@ -373,6 +373,7 @@ export class CheatingDaddyApp extends LitElement {
         startTime: { type: Number },
         isRecording: { type: Boolean },
         sessionActive: { type: Boolean },
+        testReview: { type: Boolean },
         selectedProfile: { type: String },
         selectedLanguage: { type: String },
         responses: { type: Array },
@@ -388,6 +389,7 @@ export class CheatingDaddyApp extends LitElement {
         _updateAvailable: { state: true },
         _whisperDownloading: { state: true },
         _localAiDownloadProgress: { state: true },
+        _startingSession: { state: true },
     };
 
     constructor() {
@@ -397,6 +399,7 @@ export class CheatingDaddyApp extends LitElement {
         this.startTime = null;
         this.isRecording = false;
         this.sessionActive = false;
+        this.testReview = false;
         this.selectedProfile = 'interview';
         this.selectedLanguage = 'en-US';
         this.selectedScreenshotInterval = '5';
@@ -415,6 +418,7 @@ export class CheatingDaddyApp extends LitElement {
         this._whisperDownloading = false;
         this._localAiDownloadProgress = { active: false, label: '', percentage: null };
         this._localVersion = '';
+        this._startingSession = false;
 
         this._loadFromStorage();
         this._checkForUpdates();
@@ -571,6 +575,7 @@ export class CheatingDaddyApp extends LitElement {
                 await ipcRenderer.invoke('close-session');
             }
             this.sessionActive = false;
+            this.testReview = false;
             this._stopTimer();
             this.currentView = 'main';
         } else {
@@ -599,6 +604,7 @@ export class CheatingDaddyApp extends LitElement {
 
     async handleStart() {
         if (this._startingSession || this.sessionActive) return;
+        this.testReview = false;
         this._startingSession = true;
         const token = (this._sessionStartGeneration = (this._sessionStartGeneration || 0) + 1);
         try {
@@ -634,19 +640,23 @@ export class CheatingDaddyApp extends LitElement {
         }
     }
 
-    async handleScreenStart() {
+    async handleScreenStart(testReview = false) {
         if (this._startingSession) return;
         this._startingSession = true;
         const token = (this._sessionStartGeneration = (this._sessionStartGeneration || 0) + 1);
         try {
             const prefs = await cheatingDaddy.storage.getPreferences();
             if (token !== this._sessionStartGeneration) return;
+            if (testReview && prefs.providerMode === 'local') {
+                this.setStatus('Error: Test Review needs a vision provider. Select API keys mode and configure Gemini or Groq in Home.');
+                return;
+            }
             const initialized =
                 prefs.providerMode === 'local'
                     ? await cheatingDaddy.initializeLocal(this.selectedProfile)
-                    : await cheatingDaddy.initializeScreenSession(this.selectedProfile);
+                    : await cheatingDaddy.initializeScreenSession(this.selectedProfile, testReview);
             if (!initialized || token !== this._sessionStartGeneration) return;
-            const capturing = await cheatingDaddy.startCapture(this.selectedScreenshotInterval, this.selectedImageQuality, true);
+            const capturing = await cheatingDaddy.startCapture(this.selectedScreenshotInterval, this.selectedImageQuality, true, testReview);
             if (!capturing || token !== this._sessionStartGeneration) {
                 cheatingDaddy.stopCapture();
                 if (window.require) await window.require('electron').ipcRenderer.invoke('close-session', { silent: true });
@@ -656,12 +666,14 @@ export class CheatingDaddyApp extends LitElement {
             this.currentResponseIndex = -1;
             this.startTime = Date.now();
             this.sessionActive = true;
+            this.testReview = testReview;
             this.currentView = 'assistant';
             this._startTimer();
             await this.updateComplete;
             if (token === this._sessionStartGeneration) await cheatingDaddy.captureManualScreenshot();
         } catch (error) {
             cheatingDaddy.stopCapture();
+            this.testReview = false;
             this.setStatus(`Error: Screen session could not start: ${error.message}`);
             if (window.require) await window.require('electron').ipcRenderer.invoke('close-session', { silent: true }).catch(console.error);
         } finally {
@@ -672,6 +684,7 @@ export class CheatingDaddyApp extends LitElement {
     handleSessionEnded(reason) {
         this._sessionStartGeneration = (this._sessionStartGeneration || 0) + 1;
         this.sessionActive = false;
+        this.testReview = false;
         this._stopTimer();
         this.setStatus(reason);
         this.requestUpdate();
@@ -780,6 +793,8 @@ export class CheatingDaddyApp extends LitElement {
                         .selectedProfile=${this.selectedProfile}
                         .onProfileChange=${p => this.handleProfileChange(p)}
                         .onStart=${() => this.handleStart()}
+                        .onStartReview=${() => this.handleScreenStart(true)}
+                        .isInitializing=${this._startingSession}
                         .statusText=${this.statusText}
                         .onExternalLink=${url => this.handleExternalLinkClick(url)}
                         .whisperDownloading=${this._whisperDownloading}
@@ -988,7 +1003,7 @@ export class CheatingDaddyApp extends LitElement {
                         </svg>
                     </button>
                 </div>
-                <div class="live-bar-center">${profileLabels[this.selectedProfile] || 'Session'}</div>
+                <div class="live-bar-center">${this.testReview ? 'Test Review' : profileLabels[this.selectedProfile] || 'Session'}</div>
                 <div class="live-bar-right">
                     ${this.statusText ? html`<span class="live-bar-text">${this.statusText}</span>` : ''}
                     <span class="live-bar-text">${this.getElapsedTime()}</span>

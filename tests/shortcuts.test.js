@@ -224,6 +224,7 @@ test('main IPC has one update handler, rejects other senders, and rolls back whe
             electron: { app, BrowserWindow: {}, shell: {}, ipcMain, globalShortcut: { unregisterAll: () => cleanup.push('shortcuts') } },
             './utils/window': {
                 createWindow: () => window,
+                getReviewOverlay: () => null,
                 getKeybindStatus: () => ({ keybinds: current }),
                 setShortcutsPaused: () => ({ success: true }),
                 disposeGlobalShortcuts: () => cleanup.push('shortcuts'),
@@ -235,6 +236,7 @@ test('main IPC has one update handler, rejects other senders, and rolls back whe
             },
             './utils/gemini': {
                 setupGeminiIpcHandlers() {},
+                setMainWindow() {},
                 stopMacOSAudioCapture: () => cleanup.push('audio'),
                 sendToRenderer() {},
                 closeActiveSession: () => cleanup.push('session'),

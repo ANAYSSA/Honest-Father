@@ -21,7 +21,15 @@ Requires macOS 13 or later, or 64-bit Windows 10/11.
 
 macOS builds have an ad hoc signature verified after packaging. They are not Developer ID signed or notarized, so macOS may require approval under **System Settings → Privacy & Security**. Windows builds are unsigned and may show SmartScreen. Each platform includes a `SHA256SUMS.txt` file for verifying downloads. Linux packaging is outside the scope of this fork's release workflow.
 
-## What changed in 0.9.5
+## What changed in 0.10.0
+
+- Added **Start Test Review** beside **Start Session**. It analyzes a multiple-choice practice question and circles the proposed correct radio button or checkbox directly on screen.
+- **Command + Enter** / **Ctrl + Enter** captures a new question. The show/hide shortcut toggles the marks in Test Review.
+- Scroll tracking compares local video frames and moves the existing marks without provider requests. Marks disappear when the complete question is off screen or no longer matches, and can return when you scroll back.
+- A session-only cache remembers up to three questions, bounded to 32 MiB of captured image data, so repeated captures can reuse a matching answer without uploading another screenshot.
+- Review responses use a strict JSON format and validated control coordinates. Uncertain, malformed, late, or disconnected-display results are rejected. AI answers can still be wrong; verify them as part of your practice.
+
+## Earlier improvements
 
 - Screen capture selects a display automatically without the macOS system screen picker.
 - The macOS application stays out of the Dock, including during startup. Show/hide and Quit keyboard shortcuts remain available.
@@ -44,6 +52,10 @@ macOS builds have an ad hoc signature verified after packaging. They are not Dev
 
 For spoken practice, **Start Session** starts audio capture and the Live connection. Confirm the Live model is available to your API project and allow the relevant microphone/system audio permissions. Screen-only practice avoids the Live connection and audio capture entirely.
 
+For multiple-choice practice, choose **Start Test Review**. The app hides its text window, captures the first question, and marks the proposed correct control. Press **Command + Enter** / **Ctrl + Enter** for a new question, and **Command + \\** / **Ctrl + \\** to hide or show the marks. It only annotates; it does not select or submit answers. Local scroll tracking requires the complete question and its choices to remain visible and uses no API requests. If the question cannot be matched, the marks stay hidden; scroll back or capture the new question. Reopening the app shows its main window so you can end the session or change settings.
+
+Test Review needs Gemini or Groq with an image-capable model. It does not open a Live/audio connection, and the Local AI mode currently does not support these visual annotations. Cached questions are kept only in memory until the review session ends; they are not added to History.
+
 Google and Groq enforce quotas per API project, model, and account tier. The app cannot increase these quotas. Check the provider's dashboard if a quota error appears; changing a model only helps when that model is available and has its own remaining allowance. The app no longer assumes a fixed daily screenshot quota.
 
 **Local AI** uses `llama.cpp` and `whisper.cpp` on your computer. The runtime and selected models are downloaded on first use; after downloading, sessions can run without external AI API calls. This fork currently downloads those optional runtimes from the upstream v0.7.0 release, with checksum verification.
@@ -58,7 +70,7 @@ All global shortcuts are configurable under **Customize → Keyboard Shortcuts**
 | Quit application                           | `Command + Shift + Q` | `Ctrl + Shift + Q` |
 | Move window                                | `Option + Arrow`      | `Ctrl + Arrow`     |
 | Toggle click-through                       | `Command + M`         | `Ctrl + M`         |
-| Show/hide window                           | `Command + \\`        | `Ctrl + \\`        |
+| Show/hide window (marks in Test Review)    | `Command + \\`        | `Ctrl + \\`        |
 | Send a typed message                       | `Enter`               | `Enter`            |
 
 If another application or the OS already uses a shortcut, choose a different combination in settings.
@@ -74,7 +86,7 @@ npm run test:smoke
 npm start
 ```
 
-The smoke check launches Electron with isolated temporary settings and verifies that the app renders. Live API sessions require your own key and permissions and are not exercised in CI.
+The smoke check launches Electron with isolated temporary settings and verifies the app and transparent review overlay. It does not capture your screen or call an AI provider. Live API sessions require your own key and permissions and are not exercised in CI.
 
 Build on the target OS:
 

@@ -685,6 +685,7 @@ export class MainView extends LitElement {
 
     static properties = {
         onStart: { type: Function },
+        onStartReview: { type: Function },
         statusText: { type: String },
         onExternalLink: { type: Function },
         selectedProfile: { type: String },
@@ -716,6 +717,7 @@ export class MainView extends LitElement {
     constructor() {
         super();
         this.onStart = () => {};
+        this.onStartReview = () => {};
         this.statusText = '';
         this.onExternalLink = () => {};
         this.selectedProfile = 'interview';
@@ -1048,6 +1050,11 @@ export class MainView extends LitElement {
         this.onStart();
     }
 
+    _handleStartReview() {
+        if (this.isInitializing || this.downloadProgress.active) return;
+        this.onStartReview();
+    }
+
     triggerApiKeyError() {
         this._keyError = this._mode !== 'local';
         this.requestUpdate();
@@ -1130,6 +1137,17 @@ export class MainView extends LitElement {
                     ${isDownloading ? '' : html`<span class="shortcut-hint">${isMac ? cmdIcon : ctrlIcon}${enterIcon}</span>`}
                 </span>
             </button>
+            <button
+                class="start-button ${this.isInitializing || isDownloading ? 'disabled' : ''}"
+                ?disabled=${this.isInitializing || isDownloading}
+                @click=${() => this._handleStartReview()}
+            >
+                <span class="btn-label">Start Test Review</span>
+            </button>
+            <div class="form-hint">
+                Circle the answer on your practice test. ${isMac ? '⌘' : 'Ctrl'} + Enter checks a new question; ${isMac ? '⌘' : 'Ctrl'} + \\ hides or
+                shows the marks.
+            </div>
             ${
                 isDownloading
                     ? html`

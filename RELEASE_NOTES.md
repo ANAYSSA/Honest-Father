@@ -6,6 +6,17 @@
 
 Honest Father is an open-source assistant for mock interviews, exam preparation, and learning, forked from Cheating Daddy.
 
+## New in 0.10.0
+
+- Two start buttons: **Start Session** for the existing flow and **Start Test Review** for multiple-choice practice.
+- Test Review circles the proposed correct radio button or checkbox on screen. Command+Enter / Ctrl+Enter captures a question; Command+Backslash / Ctrl+Backslash hides or shows its marks. It does not click or submit answers.
+- Local scroll tracking moves the marks without further AI requests. Unmatched or off-screen questions hide the marks; scrolling back can restore them.
+- Up to three questions are cached in memory during the session, with a 32 MiB image budget. Repeated matching captures reuse the answer without encoding or uploading another screenshot.
+- Strict complete JSON, confidence and coordinate validation, fresh-frame checks, and display/session guards prevent malformed or stale results from being drawn.
+- Test Review uses the configured Gemini or Groq vision provider without Live/audio. Local AI does not support this mode. AI can still make mistakes; verify proposed answers while studying.
+
+## Included improvements
+
 - Restored automatic display capture without the macOS system screen picker. macOS Screen Recording permission is still required.
 - macOS builds run without a Dock icon, including during startup, while preserving window visibility and keyboard shortcuts.
 - The API-mode heading now reads Honest Father ANAYSSA.

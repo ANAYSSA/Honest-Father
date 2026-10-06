@@ -1,5 +1,5 @@
 // Launch the real Electron app with isolated storage and verify its rendered UI.
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, screen } = require('electron');
 const os = require('node:os');
 const path = require('node:path');
 const assert = require('node:assert/strict');
@@ -54,6 +54,10 @@ app.whenReady().then(async () => {
             await settings?.updateComplete;
             const quitVisible = settings?.shadowRoot.textContent.includes('Quit Application');
             app.currentView = 'main';
+            await app.updateComplete;
+            const home = app.shadowRoot.querySelector('main-view');
+            await home?.updateComplete;
+            const reviewButtonVisible = home?.shadowRoot.textContent.includes('Start Test Review');
             const originalInitialize = window.cheatingDaddy.initializeGemini;
             const originalCapture = window.cheatingDaddy.startCapture;
             let captureCalls = 0;
@@ -80,13 +84,18 @@ app.whenReady().then(async () => {
             await window.cheatingDaddy.handleShortcut('cmd+enter');
             const screenShortcutWorks = screenOnly && screenshots === 1 && app.sessionActive && app.currentView === 'assistant';
             await app.handleClose();
+            let reviewCapture = false;
+            window.cheatingDaddy.startCapture = async (_interval, _quality, onlyScreen, review) => { reviewCapture = onlyScreen && review; return true; };
+            await app.handleScreenStart(true);
+            const reviewStartWorks = reviewCapture && app.sessionActive && app.testReview && app.currentView === 'assistant';
+            await app.handleClose();
             window.cheatingDaddy.captureManualScreenshot = originalScreenshot;
             window.cheatingDaddy.startCapture = originalCapture;
             return {
                 loaded: app._storageLoaded,
                 title: document.title,
                 settings: Boolean(settings),
-                quitVisible, rejectsFailedProvider, rejectsFailedCapture, cancelsLateStartup, screenShortcutWorks,
+                quitVisible, rejectsFailedProvider, rejectsFailedCapture, cancelsLateStartup, screenShortcutWorks, reviewButtonVisible, reviewStartWorks,
                 api: typeof window.cheatingDaddy.initializeGemini,
             };
         })()`);
@@ -99,6 +108,80 @@ app.whenReady().then(async () => {
         assert.equal(result.rejectsFailedCapture, true);
         assert.equal(result.cancelsLateStartup, true);
         assert.equal(result.screenShortcutWorks, true);
+        assert.equal(result.reviewButtonVisible, true);
+        assert.equal(result.reviewStartWorks, true);
+        const tracking = await window.webContents.executeJavaScript(`(() => {
+            const { createReviewFrameTracker } = require('./utils/reviewFrame');
+            const canvas = document.createElement('canvas');
+            canvas.width = 1000; canvas.height = 800;
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            const draw = (dy = 0, changed = false) => {
+                ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 1000, 800);
+                ctx.fillStyle = '#111'; ctx.font = '24px Arial';
+                ctx.fillText(changed ? 'Which integral matches this expression?' : 'Which remainder matches this expression?', 130, 130 + dy);
+                ctx.fillText('For n = 37, find n modulo 5.', 130, 170 + dy);
+                ['A: exactly zero', 'B: remainder two', 'C: remainder three', 'D: remainder four'].forEach((text, i) => {
+                    const y = 270 + i * 60 + dy;
+                    ctx.strokeStyle = '#111'; ctx.lineWidth = 2;
+                    ctx.beginPath(); ctx.arc(140, y - 8, 10, 0, 2 * Math.PI); ctx.stroke();
+                    ctx.fillText(text, 170, y);
+                });
+                return ctx.getImageData(0, 0, 1000, 800);
+            };
+            const answer = { questionBox: [100, 100, 650, 900], answers: [{ label: 'B', box: [390, 128, 418, 152] }], confidence: .95 };
+            const base = draw();
+            const moved = draw(61);
+            const tracker = createReviewFrameTracker(base, answer);
+            const initial = tracker.locate(draw());
+            const start = performance.now();
+            const scroll = tracker.locate(moved);
+            const elapsed = performance.now() - start;
+            const changed = tracker.locate(draw(61, true));
+            const restored = tracker.locate(draw());
+            const clipped = tracker.locate(draw(400));
+            return { initial: initial.state, scroll: scroll.state, reason: scroll.reason, offset: scroll.offset, changed: changed.state, restored: restored.state, clipped: clipped.state, elapsed };
+        })()`);
+        assert.equal(tracking.initial, 'matched', 'Real browser-rendered text can be tracked');
+        assert.equal(tracking.scroll, 'matched', 'Local tracking follows browser-rendered text during scrolling');
+        assert.ok(Math.abs(tracking.offset.y - 76.25) < 1.5);
+        assert.equal(tracking.changed, 'hidden', 'Changed question text hides a cached choice');
+        assert.equal(tracking.restored, 'matched');
+        assert.equal(tracking.clipped, 'hidden');
+        assert.ok(tracking.elapsed < 2000, 'Local tracking has bounded processing time');
+        console.log('Synthetic browser text tracking passed:', JSON.stringify(tracking));
+        // Exercise the real isolated overlay without capturing a screen or calling any provider.
+        const manager = require('../src/utils/window').getReviewOverlay();
+        const display = screen.getPrimaryDisplay();
+        assert.equal(manager.recordSource({ display_id: String(display.id) }).success, true);
+        assert.equal(manager.begin().success, true);
+        assert.equal(window.isVisible(), false);
+        const token = manager.prepareCapture();
+        const answer = { questionBox: [100, 100, 800, 800], answers: [{ label: 'B', box: [350, 120, 375, 145] }], confidence: 0.95 };
+        const dimensions = { imageWidth: display.bounds.width, imageHeight: display.bounds.height };
+        assert.equal(manager.cacheAnswer(token, answer, dimensions).success, true);
+        assert.equal(manager.showAnswer(token, { x: 0, y: 20 }).success, true);
+        const overlay = BrowserWindow.getAllWindows().find(candidate => candidate !== window);
+        assert.ok(overlay, 'Review uses a separate overlay window');
+        assert.deepEqual(overlay.getBounds(), display.bounds, 'Overlay covers the complete captured display in DIP');
+        if (overlay.webContents.isLoadingMainFrame()) await new Promise(resolve => overlay.webContents.once('did-finish-load', resolve));
+        const rendered = await overlay.webContents.executeJavaScript(`({
+            rings: document.querySelectorAll('.answer-ring').length,
+            cy: Number(document.querySelector('.answer-ring')?.getAttribute('cy')),
+            nodeDisabled: typeof window.require === 'undefined',
+            secureListener: typeof window.reviewOverlay?.onUpdate === 'function'
+        })`);
+        assert.equal(rendered.rings, 1);
+        assert.ok(Math.abs(rendered.cy - 0.3825 * display.bounds.height) < 0.01);
+        assert.equal(rendered.nodeDisabled, true);
+        assert.equal(rendered.secureListener, true);
+        assert.equal(overlay.isVisible(), true);
+        assert.equal(overlay.isFocusable(), false);
+        assert.equal(manager.toggle().visible, false);
+        assert.equal(manager.moveAnswer(token, { x: 0, y: -20 }).visible, false, 'Local scrolling respects a hidden mark');
+        assert.equal(manager.toggle().visible, true);
+        if (process.platform === 'darwin') assert.equal(app.dock.isVisible(), false, 'Overlay never restores the Dock icon');
+        manager.end();
+        assert.equal(BrowserWindow.getAllWindows().length, 1, 'Ending review destroys its overlay');
         assert.deepEqual(errors, []);
         console.log('Honest Father Electron smoke passed:', JSON.stringify(result));
         app.quit();

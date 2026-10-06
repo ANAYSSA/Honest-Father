@@ -1,5 +1,6 @@
 // renderer.js
 const { ipcRenderer } = require('electron');
+const { createReviewFrameTracker } = require('./utils/reviewFrame');
 
 let mediaStream = null;
 let screenshotInterval = null;
@@ -10,6 +11,7 @@ let micAudioContext = null;
 let microphoneStream = null;
 let captureGeneration = 0;
 let captureScreenOnly = false;
+let captureTestReview = false;
 let audioBuffer = [];
 const SAMPLE_RATE = 24000;
 const AUDIO_CHUNK_DURATION = 0.1; // seconds
@@ -20,6 +22,10 @@ let offscreenCanvas = null;
 let offscreenContext = null;
 let currentImageQuality = 'medium'; // Store current image quality for manual screenshots
 let screenshotRequest = null;
+let reviewFrameGuard = null;
+let reviewWatchdog = null;
+let reviewQuestionCache = [];
+const REVIEW_CACHE_BYTES = 32 * 1024 * 1024;
 
 const isLinux = process.platform === 'linux';
 const isMacOS = process.platform === 'darwin';
@@ -207,10 +213,12 @@ ipcRenderer.on('update-status', (event, status) => {
     cheatingDaddy.setStatus(status);
 });
 
-async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'medium', screenOnly = false) {
+async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'medium', screenOnly = false, testReview = false) {
     stopCapture();
     const generation = captureGeneration;
+    screenOnly = screenOnly || testReview;
     captureScreenOnly = screenOnly;
+    captureTestReview = testReview;
     currentImageQuality = imageQuality;
     try {
         await loadPreferencesCache();
@@ -222,7 +230,7 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
         let stream;
         try {
             stream = await navigator.mediaDevices.getDisplayMedia({
-                video: { frameRate: 1, width: { ideal: 2560 }, height: { ideal: 1600 } },
+                video: { frameRate: testReview ? 5 : 1, width: { ideal: 2560 }, height: { ideal: 1600 } },
                 audio:
                     captureSystem && !isMacOS
                         ? {
@@ -284,6 +292,11 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
             microphoneStream = micStream;
             setupMicrophoneProcessing(micStream);
         }
+        if (testReview) {
+            const result = await ipcRenderer.invoke('review:begin');
+            if (generation !== captureGeneration) return false;
+            if (result?.success === false) throw new Error(result.error || 'Test Review could not start. Try again.');
+        }
         // Screenshots remain manual to avoid repeated image requests.
         return true;
     } catch (error) {
@@ -338,6 +351,137 @@ const MANUAL_SCREENSHOT_PROMPT = `Read the practice question on this screenshot 
 For coding exercises, provide complete code, then briefly explain the approach and complexity. For multiple-choice questions, start with the correct option.
 Focus on the question visible on screen. If essential text is unreadable or missing, say exactly what is needed instead of guessing.`;
 
+function waitForVideoFrame(video, request, fresh = false) {
+    return new Promise((resolve, reject) => {
+        let frameCallback = null;
+        let settled = false;
+        let lastFrameTime = video.currentTime;
+        let advancingFrames = 0;
+        const hasFrameClock = typeof performance !== 'undefined' && typeof performance.now === 'function';
+        const frameClock = () => (hasFrameClock ? performance.now() : Date.now());
+        const startedAt = frameClock();
+        const cleanup = () => {
+            settled = true;
+            clearTimeout(timeout);
+            if (frameCallback !== null) video.cancelVideoFrameCallback?.(frameCallback);
+            video.removeEventListener('loadeddata', ready);
+            video.removeEventListener('loadeddata', timeAdvanced);
+            video.removeEventListener('timeupdate', timeAdvanced);
+            video.removeEventListener('error', failed);
+            if (request.cancelFrameWait === cancel) request.cancelFrameWait = null;
+        };
+        const ready = () => {
+            cleanup();
+            resolve(true);
+        };
+        const advanced = (now = frameClock(), metadata = null) => {
+            if (settled || video.readyState < 2) return false;
+            if (!fresh) {
+                ready();
+                return true;
+            }
+            const frameTime = metadata?.mediaTime ?? video.currentTime;
+            if (!Number.isFinite(frameTime) || frameTime <= lastFrameTime) return false;
+            lastFrameTime = frameTime;
+            if (hasFrameClock && Number.isFinite(metadata?.captureTime) && metadata.captureTime <= startedAt) return false;
+            advancingFrames += 1;
+            if (advancingFrames < 2 || now - startedAt < 150) return false;
+            ready();
+            return true;
+        };
+        const timeAdvanced = () => advanced();
+        const framePresented = (now, metadata) => {
+            if (settled) return;
+            frameCallback = null;
+            if (!advanced(Number.isFinite(now) ? now : frameClock(), metadata) && !settled) {
+                frameCallback = video.requestVideoFrameCallback(framePresented);
+            }
+        };
+        const failed = () => {
+            cleanup();
+            reject(new Error('The shared screen has no fresh readable video frame. Share it again.'));
+        };
+        const cancel = () => {
+            cleanup();
+            resolve(false);
+        };
+        const timeout = setTimeout(failed, 5000);
+        request.cancelFrameWait = cancel;
+        video.addEventListener('error', failed, { once: true });
+        if (fresh && typeof video.requestVideoFrameCallback === 'function') {
+            frameCallback = video.requestVideoFrameCallback(framePresented);
+        } else {
+            if (video.readyState < 2) video.addEventListener('loadeddata', fresh ? timeAdvanced : ready, { once: true });
+            video.addEventListener('timeupdate', timeAdvanced);
+            if (!fresh && video.readyState >= 2) ready();
+        }
+    });
+}
+
+function stopReviewWatchdog() {
+    if (reviewWatchdog) clearInterval(reviewWatchdog);
+    reviewWatchdog = null;
+    reviewFrameGuard = null;
+}
+
+function setReviewStatus(text, generation) {
+    if (generation !== captureGeneration || !captureTestReview) return;
+    cheatingDaddy.setStatus(text);
+    ipcRenderer.invoke('review:status', text).catch(console.error);
+}
+
+function cacheReviewQuestion(guard, replacedEntry) {
+    const entry = {
+        tracker: guard.tracker,
+        token: guard.token,
+        sourceWidth: guard.sourceWidth,
+        sourceHeight: guard.sourceHeight,
+        bytes: guard.tracker.retainedBytes ?? guard.snapshotBytes,
+    };
+    reviewQuestionCache = reviewQuestionCache.filter(cached => cached !== replacedEntry);
+    if (entry.bytes > REVIEW_CACHE_BYTES) return;
+    reviewQuestionCache.push(entry);
+    while (reviewQuestionCache.length > 3 || reviewQuestionCache.reduce((total, cached) => total + cached.bytes, 0) > REVIEW_CACHE_BYTES) {
+        reviewQuestionCache.shift();
+    }
+}
+
+function readReviewFrame(guard) {
+    if (guard.video.videoWidth !== guard.sourceWidth || guard.video.videoHeight !== guard.sourceHeight || guard.video.readyState < 2) {
+        return null;
+    }
+    guard.context.drawImage(guard.video, 0, 0, guard.frameWidth, guard.frameHeight);
+    return guard.context.getImageData(0, 0, guard.frameWidth, guard.frameHeight);
+}
+
+function startReviewWatchdog(guard) {
+    stopReviewWatchdog();
+    reviewFrameGuard = guard;
+    reviewWatchdog = setInterval(() => {
+        if (reviewFrameGuard !== guard || guard.generation !== captureGeneration || guard.stream !== mediaStream) return;
+        let location;
+        try {
+            const frame = readReviewFrame(guard);
+            location = frame ? guard.tracker.locate(frame) : { state: 'hidden' };
+        } catch (error) {
+            console.warn('Test Review screen check failed:', error.message);
+            location = { state: 'hidden' };
+        }
+        if (location.state === 'matched') {
+            if (guard.hidden || guard.offset?.x !== location.offset.x || guard.offset?.y !== location.offset.y) {
+                guard.hidden = false;
+                guard.offset = location.offset;
+                ipcRenderer.invoke('review:move-answer', guard.token, location.offset).catch(console.error);
+                cheatingDaddy.setStatus('Test Review ready');
+            }
+        } else if (!guard.hidden) {
+            guard.hidden = true;
+            ipcRenderer.invoke('review:hide-answer', guard.token).catch(console.error);
+            cheatingDaddy.setStatus('Question is off screen. Scroll back or capture a new question.');
+        }
+    }, 500);
+}
+
 async function captureScreenshot(imageQuality = 'medium', isManual = false, prompt = null) {
     const generation = captureGeneration;
     const stream = mediaStream;
@@ -346,11 +490,16 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false, prom
         return false;
     }
     if (screenshotRequest?.generation === generation) {
-        cheatingDaddy.setStatus('A screenshot is already being processed. Wait for the response.');
+        const status = 'A screenshot is already being processed. Wait for the response.';
+        cheatingDaddy.setStatus(status);
+        if (screenshotRequest.reviewSnapshotReady) setReviewStatus(status, generation);
         return false;
     }
     const request = { generation };
     screenshotRequest = request;
+    const testReview = captureTestReview;
+    let reviewCapture = null;
+    if (testReview) stopReviewWatchdog();
     const isCurrent = () => generation === captureGeneration && stream === mediaStream;
     try {
         cheatingDaddy.setStatus('Reading screen...');
@@ -365,27 +514,17 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false, prom
             await video.play();
         }
         if (!isCurrent()) return false;
-        if (video.readyState < 2) {
-            await new Promise((resolve, reject) => {
-                const cleanup = () => {
-                    clearTimeout(timeout);
-                    video.removeEventListener('loadeddata', ready);
-                    video.removeEventListener('error', failed);
-                };
-                const ready = () => {
-                    cleanup();
-                    resolve();
-                };
-                const failed = () => {
-                    cleanup();
-                    reject(new Error('The shared screen has no readable video frame. Share it again.'));
-                };
-                const timeout = setTimeout(failed, 5000);
-                video.addEventListener('loadeddata', ready, { once: true });
-                video.addEventListener('error', failed, { once: true });
-            });
-        }
+        if (video.readyState < 2 && !(await waitForVideoFrame(video, request))) return false;
         if (!isCurrent()) return false;
+        if (testReview) {
+            reviewCapture = await ipcRenderer.invoke('review:prepare-capture');
+            if (!isCurrent()) return false;
+            if (reviewCapture?.success === false) throw new Error(reviewCapture.error || 'Test Review is not ready. Start it again.');
+            if (!reviewCapture?.captureId || !reviewCapture.requestId || !reviewCapture.display) {
+                throw new Error('Test Review could not identify the shared display. Start it again.');
+            }
+            if (!(await waitForVideoFrame(video, request, true)) || !isCurrent()) return false;
+        }
         if (!video.videoWidth || !video.videoHeight) throw new Error('The shared screen is empty. Share it again.');
 
         // Keep small text legible; lower quality remains available for slow connections.
@@ -396,54 +535,121 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false, prom
         const canvas = document.createElement('canvas');
         canvas.width = width;
         canvas.height = height;
-        const context = canvas.getContext('2d');
+        const context = canvas.getContext('2d', testReview ? { willReadFrequently: true } : undefined);
         if (!context) throw new Error('Unable to read the shared screen. Share it again.');
         offscreenCanvas = canvas;
         offscreenContext = context;
         context.drawImage(video, 0, 0, width, height);
-        const qualityValues = { high: 0.95, medium: 0.88, low: 0.7 };
-        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', qualityValues[imageQuality] ?? qualityValues.medium));
-        if (!isCurrent()) return false;
-        if (!blob) throw new Error('Unable to encode the screenshot. Try again.');
-
-        const base64data = await new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result.split(',')[1] : '');
-            reader.onerror = () => reject(new Error('Unable to read the screenshot. Try again.'));
-            reader.onabort = () => reject(new Error('Screenshot reading was interrupted. Try again.'));
-            reader.readAsDataURL(blob);
-        });
-        if (!isCurrent()) return false;
-        if (!base64data || base64data.length < 100) throw new Error('The screenshot contains no usable image. Share your screen again.');
-
-        const payload = { data: base64data };
-        if (isManual) {
-            payload.prompt = prompt || MANUAL_SCREENSHOT_PROMPT;
-            // A requested answer should appear immediately even while browsing older responses.
-            const app = cheatingDaddy.element();
-            app.currentResponseIndex = app.responses.length - 1;
-            app.requestUpdate?.();
+        const reviewSnapshot = testReview ? context.getImageData(0, 0, width, height) : null;
+        if (testReview) request.reviewSnapshotReady = true;
+        const sourceWidth = video.videoWidth;
+        const sourceHeight = video.videoHeight;
+        let result = null;
+        let matchedCacheEntry = null;
+        if (testReview) {
+            for (const entry of [...reviewQuestionCache].reverse()) {
+                if (entry.sourceWidth !== sourceWidth || entry.sourceHeight !== sourceHeight) continue;
+                const location = entry.tracker.locate(reviewSnapshot);
+                if (location.state !== 'matched') continue;
+                matchedCacheEntry = entry;
+                const cached = await ipcRenderer.invoke('review:reuse-answer', reviewCapture, entry.token, location.offset);
+                if (!isCurrent()) return false;
+                if (cached?.success && cached.reviewAnswer) result = cached;
+                break;
+            }
         }
-        cheatingDaddy.setStatus('Waiting for AI response...');
-        const result = await ipcRenderer.invoke('send-image-content', payload);
+        if (!result) {
+            const qualityValues = { high: 0.95, medium: 0.88, low: 0.7 };
+            const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', qualityValues[imageQuality] ?? qualityValues.medium));
+            if (!isCurrent()) return false;
+            if (!blob) throw new Error('Unable to encode the screenshot. Try again.');
+
+            const base64data = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result.split(',')[1] : '');
+                reader.onerror = () => reject(new Error('Unable to read the screenshot. Try again.'));
+                reader.onabort = () => reject(new Error('Screenshot reading was interrupted. Try again.'));
+                reader.readAsDataURL(blob);
+            });
+            if (!isCurrent()) return false;
+            if (!base64data || base64data.length < 100) throw new Error('The screenshot contains no usable image. Share your screen again.');
+
+            const payload = { data: base64data };
+            if (testReview) {
+                payload.reviewCapture = reviewCapture;
+                payload.imageWidth = width;
+                payload.imageHeight = height;
+            } else if (isManual) {
+                payload.prompt = prompt || MANUAL_SCREENSHOT_PROMPT;
+                // A requested answer should appear immediately even while browsing older responses.
+                const app = cheatingDaddy.element();
+                app.currentResponseIndex = app.responses.length - 1;
+                app.requestUpdate?.();
+            }
+            cheatingDaddy.setStatus('Waiting for AI response...');
+            result = await ipcRenderer.invoke('send-image-content', payload);
+        }
         if (!isCurrent()) return false;
         if (result.skipped) {
-            cheatingDaddy.setStatus(
+            const status =
                 result.code === 'busy'
                     ? 'A previous request is finishing. Try the shortcut again shortly.'
-                    : 'Screenshot request was canceled. Try the shortcut again.'
-            );
+                    : 'Screenshot request was canceled. Try the shortcut again.';
+            if (testReview) setReviewStatus(status, generation);
+            else cheatingDaddy.setStatus(status);
             return false;
         }
         if (!result.success) throw new Error(result.error || 'The AI provider could not answer. Try again.');
-        cheatingDaddy.setStatus(captureScreenOnly ? 'Screen ready' : 'Listening...');
+        if (testReview) {
+            if (!result.reviewAnswer) throw new Error('Test Review returned no usable answer markers. Try again.');
+            await ipcRenderer.invoke('review:status', '');
+            if (!isCurrent()) return false;
+            if (!(await waitForVideoFrame(video, request, true)) || !isCurrent()) return false;
+            const guard = {
+                generation,
+                stream,
+                video,
+                context,
+                frameWidth: width,
+                frameHeight: height,
+                snapshotBytes: reviewSnapshot.data.byteLength,
+                answer: result.reviewAnswer,
+                token: reviewCapture,
+                sourceWidth,
+                sourceHeight,
+                tracker: createReviewFrameTracker(reviewSnapshot, result.reviewAnswer),
+            };
+            const currentFrame = readReviewFrame(guard);
+            const location = currentFrame ? guard.tracker.locate(currentFrame) : { state: 'hidden' };
+            guard.hidden = location.state !== 'matched';
+            guard.offset = location.offset;
+            const shown = guard.hidden
+                ? await ipcRenderer.invoke('review:hide-answer', reviewCapture)
+                : await ipcRenderer.invoke('review:show-answer', reviewCapture, location.offset);
+            if (!isCurrent()) return false;
+            if (shown?.success === false) throw new Error(shown.error || 'Answer markers could not be shown. Capture the screen again.');
+            cacheReviewQuestion(guard, matchedCacheEntry);
+            startReviewWatchdog(guard);
+        }
+        cheatingDaddy.setStatus(
+            testReview
+                ? reviewFrameGuard?.hidden
+                    ? 'Question is off screen. Scroll back or capture a new question.'
+                    : 'Test Review ready'
+                : captureScreenOnly
+                  ? 'Screen ready'
+                  : 'Listening...'
+        );
         console.log(`Screenshot response completed (${width}x${height})`);
         return true;
     } catch (error) {
         if (isCurrent()) {
             console.error('Screenshot failed:', error);
-            cheatingDaddy.setStatus(`Error: Screenshot could not be processed: ${error.message}`);
-            if (isManual) cheatingDaddy.addNewResponse(`Error: ${error.message}`);
+            if (testReview && reviewCapture) ipcRenderer.invoke('review:clear', reviewCapture).catch(console.error);
+            const status = `Error: Screenshot could not be processed: ${error.message}`;
+            if (testReview) setReviewStatus(status, generation);
+            else cheatingDaddy.setStatus(status);
+            if (isManual && !testReview) cheatingDaddy.addNewResponse(`Error: ${error.message}`);
         }
         return false;
     } finally {
@@ -461,6 +667,11 @@ window.captureManualScreenshot = captureManualScreenshot;
 
 function stopCapture() {
     captureGeneration += 1;
+    screenshotRequest?.cancelFrameWait?.();
+    stopReviewWatchdog();
+    reviewQuestionCache = [];
+    if (captureTestReview) ipcRenderer.invoke('review:end').catch(console.error);
+    captureTestReview = false;
     captureScreenOnly = false;
     if (screenshotInterval) {
         clearInterval(screenshotInterval);
@@ -887,9 +1098,9 @@ const theme = {
     },
 };
 
-async function initializeScreenSession(profile = 'interview') {
+async function initializeScreenSession(profile = 'interview', testReview = false) {
     const prefs = await storage.getPreferences();
-    return ipcRenderer.invoke('initialize-screen-session', profile, prefs.customPrompt || '');
+    return ipcRenderer.invoke('initialize-screen-session', profile, prefs.customPrompt || '', testReview ? 'test-review' : 'text');
 }
 
 // Consolidated cheatingDaddy object - all functions in one place

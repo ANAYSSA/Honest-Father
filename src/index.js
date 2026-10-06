@@ -2,9 +2,16 @@ if (require('electron-squirrel-startup')) {
     process.exit(0);
 }
 
-const { app, BrowserWindow, shell, ipcMain, globalShortcut } = require('electron');
-const { createWindow, updateGlobalShortcuts, setShortcutsPaused, getKeybindStatus, disposeGlobalShortcuts } = require('./utils/window');
-const { setupGeminiIpcHandlers, stopMacOSAudioCapture, sendToRenderer, closeActiveSession } = require('./utils/gemini');
+const { app, shell, ipcMain, globalShortcut } = require('electron');
+const {
+    createWindow,
+    getReviewOverlay,
+    updateGlobalShortcuts,
+    setShortcutsPaused,
+    getKeybindStatus,
+    disposeGlobalShortcuts,
+} = require('./utils/window');
+const { setupGeminiIpcHandlers, stopMacOSAudioCapture, sendToRenderer, closeActiveSession, setMainWindow } = require('./utils/gemini');
 const { normalizeKeybinds } = require('./utils/keybinds');
 const { createShutdownHandler, createQuitController } = require('./utils/shutdown');
 const storage = require('./storage');
@@ -25,6 +32,7 @@ process.once('exit', quitController.processExited);
 function createMainWindow() {
     if (process.platform === 'darwin') app.setActivationPolicy('accessory');
     mainWindow = createWindow(sendToRenderer, geminiSessionRef);
+    setMainWindow(mainWindow, getReviewOverlay());
     if (process.platform === 'darwin') {
         app.dock.hide();
         const createdWindow = mainWindow;
@@ -59,8 +67,10 @@ app.on('will-quit', () => globalShortcut.unregisterAll());
 
 app.on('activate', () => {
     if (quitController.isQuitting()) return;
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (!mainWindow || mainWindow.isDestroyed()) {
         createMainWindow();
+    } else {
+        mainWindow.show();
     }
 });
 

@@ -11,7 +11,10 @@ function selectScreenSource(sources, screen, mainWindow) {
     return sources.find(item => item.display_id === primaryId) || sources[0];
 }
 
-function registerAutomaticScreenCapture(session, { desktopCapturer, screen, mainWindow, platform = process.platform, logger = console }) {
+function registerAutomaticScreenCapture(
+    session,
+    { desktopCapturer, screen, mainWindow, onSourceSelected = () => {}, platform = process.platform, logger = console }
+) {
     const isCurrentRequest = request => !mainWindow.isDestroyed() && request.videoRequested && request.frame === mainWindow.webContents.mainFrame;
     session.setDisplayMediaRequestHandler(
         async (request, callback) => {
@@ -23,6 +26,7 @@ function registerAutomaticScreenCapture(session, { desktopCapturer, screen, main
                     if (isCurrentRequest(request)) {
                         const source = selectScreenSource(sources, screen, mainWindow);
                         if (source) {
+                            onSourceSelected(source);
                             streams = { video: source };
                             if (platform === 'win32' && request.audioRequested) streams.audio = 'loopback';
                         }

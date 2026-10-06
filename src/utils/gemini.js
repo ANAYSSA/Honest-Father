@@ -1,10 +1,20 @@
 const { GoogleGenAI, Modality } = require('@google/genai');
-const { BrowserWindow, ipcMain } = require('electron');
+const { ipcMain } = require('electron');
 const { spawn } = require('child_process');
 const { saveDebugAudio } = require('../audioUtils');
 const { getSystemPrompt, getScreenshotSystemPrompt } = require('./prompts');
+const { REVIEW_SYSTEM_PROMPT, REVIEW_USER_PROMPT, parseReviewAnswer } = require('./testReview');
 const { getAvailableModel, incrementLimitCount, getApiKey, getGroqApiKey, incrementCharUsage, getConfig, getPreferences } = require('../storage');
-const { connectCloud, sendCloudAudio, sendCloudText, sendCloudImage, closeCloud, isCloudActive, setOnTurnComplete } = require('./cloud');
+const {
+    connectCloud,
+    sendCloudAudio,
+    sendCloudText,
+    sendCloudImage,
+    closeCloud,
+    isCloudActive,
+    setOnTurnComplete,
+    setRendererWindow,
+} = require('./cloud');
 const { startTransportLog, logTransportEvent, closeTransportLog } = require('./transportLogger');
 const {
     classifyGoogleError,
@@ -24,6 +34,15 @@ function getLocalAi() {
 
 // Provider mode: 'byok', 'cloud', or 'local'
 let currentProviderMode = 'byok';
+let currentScreenMode = 'text';
+let rendererWindow = null;
+let reviewOverlay = null;
+
+function setMainWindow(window, overlay = null) {
+    rendererWindow = window;
+    reviewOverlay = overlay;
+    setRendererWindow(window);
+}
 
 // Groq conversation history for context
 let groqConversationHistory = [];
@@ -94,9 +113,9 @@ const reconnectController = createReconnectController({
 });
 
 function sendToRenderer(channel, data) {
-    const windows = BrowserWindow.getAllWindows();
-    if (windows.length > 0 && !windows[0].isDestroyed() && !windows[0].webContents.isDestroyed()) {
-        windows[0].webContents.send(channel, data);
+    if (rendererWindow && !rendererWindow.isDestroyed() && !rendererWindow.webContents.isDestroyed()) {
+        rendererWindow.webContents.send(channel, data);
+        if (channel === 'update-status' && reviewOverlay?.isActive()) reviewOverlay.status(data);
     }
 }
 
@@ -201,13 +220,13 @@ async function getEnabledTools() {
 
 async function getStoredSetting(key, defaultValue) {
     try {
-        const windows = BrowserWindow.getAllWindows();
-        if (windows.length > 0) {
+        const window = rendererWindow;
+        if (window && !window.isDestroyed()) {
             // Wait a bit for the renderer to be ready
             await new Promise(resolve => setTimeout(resolve, 100));
 
             // Try to get setting from renderer process localStorage
-            const value = await windows[0].webContents.executeJavaScript(`
+            const value = await window.webContents.executeJavaScript(`
                 (function() {
                     try {
                         if (typeof localStorage === 'undefined') {
@@ -455,7 +474,7 @@ async function sendToGroq(transcription) {
     }
 }
 
-async function sendImageToGroq(base64Data, prompt) {
+async function sendImageToGroq(base64Data, prompt, { testReview = false } = {}) {
     const groqApiKey = getGroqApiKey();
     const config = getConfig();
     const model = config.groqImageModel;
@@ -491,7 +510,12 @@ async function sendImageToGroq(base64Data, prompt) {
             body: JSON.stringify({
                 model,
                 messages: [
-                    { role: 'system', content: getScreenshotSystemPrompt(currentProfile || 'interview', currentCustomPrompt || '') },
+                    {
+                        role: 'system',
+                        content: testReview
+                            ? REVIEW_SYSTEM_PROMPT
+                            : getScreenshotSystemPrompt(currentProfile || 'interview', currentCustomPrompt || ''),
+                    },
                     {
                         role: 'user',
                         content: [
@@ -506,9 +530,9 @@ async function sendImageToGroq(base64Data, prompt) {
                     },
                 ],
                 stream: true,
-                temperature: 0.7,
-                max_completion_tokens: GROQ_MAX_COMPLETION_TOKENS,
-                ...getGroqReasoningOptions(model, config.disableGroqThinking),
+                temperature: testReview ? 0.1 : 0.7,
+                max_completion_tokens: testReview ? 4096 : GROQ_MAX_COMPLETION_TOKENS,
+                ...getGroqReasoningOptions(model, testReview || config.disableGroqThinking),
             }),
         });
         if (!isCurrent()) return { success: true, skipped: true, code: 'cancelled' };
@@ -552,7 +576,7 @@ async function sendImageToGroq(base64Data, prompt) {
 
                     fullText += token;
                     const displayText = stripThinkingTags(fullText);
-                    if (displayText) {
+                    if (displayText && !testReview) {
                         sendToRenderer(isFirst ? 'new-response' : 'update-response', displayText);
                         isFirst = false;
                     }
@@ -577,7 +601,7 @@ async function sendImageToGroq(base64Data, prompt) {
             return { success: false, error: GROQ_EMPTY_RESPONSE_MESSAGE };
         }
 
-        saveScreenAnalysis(prompt, cleanedResponse, model);
+        if (!testReview) saveScreenAnalysis(prompt, cleanedResponse, model);
         logTransportEvent('groq.image.completed', {
             model,
             response: cleanedResponse,
@@ -923,6 +947,8 @@ function closeConnection(session) {
 
 // Synchronous shutdown hook used by End and Electron before-quit.
 function closeActiveSession(geminiSessionRef = global.geminiSessionRef) {
+    currentScreenMode = 'text';
+    reviewOverlay?.end();
     isUserClosing = true;
     sessionGeneration++;
     reconnectController.cancel();
@@ -1149,7 +1175,7 @@ async function sendGeminiAudio(data, mimeType, geminiSessionRef, source) {
     }
 }
 
-async function sendImageToGeminiHttp(base64Data, prompt) {
+async function sendImageToGeminiHttp(base64Data, prompt, { testReview = false } = {}) {
     const model = getAvailableModel();
 
     const apiKey = getApiKey();
@@ -1186,7 +1212,10 @@ async function sendImageToGeminiHttp(base64Data, prompt) {
             contents: contents,
             config: {
                 maxOutputTokens: 4096,
-                systemInstruction: getScreenshotSystemPrompt(currentProfile || 'interview', currentCustomPrompt || ''),
+                systemInstruction: testReview
+                    ? REVIEW_SYSTEM_PROMPT
+                    : getScreenshotSystemPrompt(currentProfile || 'interview', currentCustomPrompt || ''),
+                ...(testReview ? { responseMimeType: 'application/json', temperature: 0.1 } : {}),
                 abortSignal: controller.signal,
             },
         });
@@ -1204,7 +1233,7 @@ async function sendImageToGeminiHttp(base64Data, prompt) {
             if (chunkText) {
                 fullText += chunkText;
                 // Send to renderer - new response for first chunk, update for subsequent
-                sendToRenderer(isFirst ? 'new-response' : 'update-response', fullText);
+                if (!testReview) sendToRenderer(isFirst ? 'new-response' : 'update-response', fullText);
                 isFirst = false;
             }
         }
@@ -1219,7 +1248,7 @@ async function sendImageToGeminiHttp(base64Data, prompt) {
                 code: 'empty_response',
             };
         }
-        saveScreenAnalysis(prompt, fullText, model);
+        if (!testReview) saveScreenAnalysis(prompt, fullText, model);
 
         return { success: true, text: fullText, model: model };
     } catch (error) {
@@ -1244,8 +1273,13 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
     // Store the geminiSessionRef globally for reconnection access
     global.geminiSessionRef = geminiSessionRef;
 
-    ipcMain.handle('initialize-screen-session', async (event, profile = 'interview', customPrompt = '') => {
-        if (typeof profile !== 'string' || typeof customPrompt !== 'string' || customPrompt.length > 32000) {
+    ipcMain.handle('initialize-screen-session', async (event, profile = 'interview', customPrompt = '', mode = 'text') => {
+        if (
+            typeof profile !== 'string' ||
+            typeof customPrompt !== 'string' ||
+            customPrompt.length > 32000 ||
+            !['text', 'test-review'].includes(mode)
+        ) {
             sendToRenderer('update-status', 'Invalid screen session settings.');
             return false;
         }
@@ -1258,6 +1292,7 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
         if (currentProviderMode === 'local') getLocalAi().closeLocalSession();
         if (currentProviderMode === 'cloud') closeCloud();
         currentProviderMode = 'byok';
+        currentScreenMode = mode;
         initializeNewSession(profile, customPrompt);
         currentSystemPrompt = getScreenshotSystemPrompt(profile, customPrompt);
         sendToRenderer('update-status', 'Screen ready');
@@ -1361,8 +1396,24 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
         return sendGeminiAudio(data, mimeType, geminiSessionRef, 'mic');
     });
 
-    ipcMain.handle('send-image-content', async (event, { data, prompt }) => {
+    ipcMain.handle('send-image-content', async (event, payload = {}) => {
         try {
+            const { data, reviewCapture, imageWidth, imageHeight } = payload;
+            const testReview = currentScreenMode === 'test-review';
+            const prompt = testReview ? REVIEW_USER_PROMPT : payload.prompt;
+            if (testReview || reviewCapture) {
+                if (
+                    !testReview ||
+                    !reviewOverlay?.isActive() ||
+                    !rendererWindow ||
+                    event.sender !== rendererWindow.webContents ||
+                    event.senderFrame !== rendererWindow.webContents.mainFrame
+                ) {
+                    return { success: false, error: 'Invalid test review request.' };
+                }
+                const valid = reviewOverlay.validateCapture(reviewCapture, { imageWidth, imageHeight });
+                if (!valid.success) return valid;
+            }
             if (!data || typeof data !== 'string' || data.length > 14000000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) {
                 console.error('Invalid image data received');
                 return { success: false, error: 'Invalid image data' };
@@ -1391,7 +1442,15 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
                 return result;
             }
 
-            const result = hasGroqKey() ? await sendImageToGroq(data, prompt) : await sendImageToGeminiHttp(data, prompt);
+            const result = hasGroqKey()
+                ? await sendImageToGroq(data, prompt, { testReview })
+                : await sendImageToGeminiHttp(data, prompt, { testReview });
+            if (testReview && result.success && !result.skipped) {
+                const answer = parseReviewAnswer(result.text);
+                const cached = reviewOverlay.cacheAnswer(reviewCapture, answer, { imageWidth, imageHeight });
+                if (!cached.success) return cached;
+                return { success: true, reviewAnswer: answer, model: result.model };
+            }
             return result;
         } catch (error) {
             console.error('Error sending image:', error);
@@ -1532,6 +1591,7 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
 }
 
 module.exports = {
+    setMainWindow,
     initializeGeminiSession,
     getEnabledTools,
     getStoredSetting,
