@@ -268,6 +268,7 @@ test('main IPC has one update handler, rejects other senders, and rolls back whe
     const app = new EventEmitter();
     app.whenReady = () => Promise.resolve();
     app.setName = () => {};
+    app.requestSingleInstanceLock = () => true;
     app.setAppUserModelId = () => {};
     app.exit = () => {};
     const handlers = new Map();
@@ -299,6 +300,7 @@ test('main IPC has one update handler, rejects other senders, and rolls back whe
                     return { success: true, keybinds: current };
                 },
             },
+            './utils/chatgpt': { setupChatGPT() {} },
             './utils/gemini': {
                 setupGeminiIpcHandlers() {},
                 setMainWindow() {},
@@ -333,6 +335,7 @@ for (const platform of ['darwin', 'win32']) {
         const app = new EventEmitter();
         app.whenReady = () => Promise.resolve();
         app.setName = () => {};
+        app.requestSingleInstanceLock = () => true;
         app.setAppUserModelId = () => {};
         app.setActivationPolicy = () => {};
         app.dock = { hide() {} };
@@ -363,6 +366,7 @@ for (const platform of ['darwin', 'win32']) {
                     disposeGlobalShortcuts() {},
                     updateGlobalShortcuts() {},
                 },
+                './utils/chatgpt': { setupChatGPT() {} },
                 './utils/gemini': {
                     setupGeminiIpcHandlers() {},
                     setMainWindow() {},

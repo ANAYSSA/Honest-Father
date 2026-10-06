@@ -39,6 +39,7 @@ function makeStream(audio = false) {
 function loadRenderer({
     platform = 'darwin',
     mode = 'mic_only',
+    config = {},
     mediaDevices,
     invokeOverride,
     createElement,
@@ -100,6 +101,7 @@ function loadRenderer({
                 if (override !== undefined) return override;
             }
             if (channel === 'storage:get-preferences') return { success: true, data: { audioMode: mode } };
+            if (channel === 'storage:get-config') return { success: true, data: config };
             if (channel === 'storage:get-api-key') return { success: true, data: 'test-key' };
             return { success: true };
         },
@@ -1071,6 +1073,63 @@ test('typed follow-up in screen-only mode analyzes the current screen without op
         harness.calls.some(call => call.channel === 'send-text-message' || call.channel === 'initialize-gemini'),
         false
     );
+    harness.api.stopCapture();
+});
+
+test('a ChatGPT account disconnect stops screen-only capture while unrelated Live failures remain ignored', async () => {
+    const screen = makeStream();
+    const harness = loadRenderer({
+        config: { normalResponseProvider: 'chatgpt' },
+        mediaDevices: { getDisplayMedia: async () => screen },
+    });
+    assert.equal(await harness.api.startCapture(5, 'medium', true), true);
+    harness.listeners.get('provider-session-ended')({}, { reason: 'Old Gemini connection ended' });
+    assert.equal(screen.videoTrack.stopped, false);
+    harness.listeners.get('provider-session-ended')({}, { code: 'chatgpt_account_changed', reason: 'ChatGPT account changed. Start a new session.' });
+    assert.equal(screen.videoTrack.stopped, true);
+    assert.equal(harness.app.ended, 'ChatGPT account changed. Start a new session.');
+});
+
+test('screen-only ChatGPT follow-ups send text only and keep the session provider until capture ends', async () => {
+    const screen = makeStream();
+    const config = { normalResponseProvider: 'chatgpt' };
+    const harness = loadRenderer({
+        config,
+        mediaDevices: { getDisplayMedia: async () => screen },
+        createElement() {
+            assert.fail('A text follow-up must not capture or encode a screenshot.');
+        },
+    });
+    assert.equal(await harness.api.startCapture(5, 'medium', true), true);
+    config.normalResponseProvider = 'gemini';
+    assert.equal((await harness.api.sendTextMessage('Explain the previous answer')).success, true);
+    const request = harness.calls.find(call => call.channel === 'send-text-message');
+    assert.equal(request.args[0], 'Explain the previous answer');
+    assert.equal(
+        harness.calls.some(call => call.channel === 'send-image-content'),
+        false
+    );
+    harness.api.stopCapture();
+    assert.equal(await harness.api.startCapture(5, 'medium', true), true);
+    harness.listeners.get('provider-session-ended')({}, { code: 'chatgpt_account_changed', reason: 'Old account event' });
+    assert.equal(harness.app.ended, undefined, 'The next Gemini screen session must ignore a stale ChatGPT event.');
+    harness.api.stopCapture();
+});
+
+test('Test Review ignores the normal ChatGPT selection and its account disconnect events', async () => {
+    const screen = makeStream();
+    const harness = loadRenderer({
+        config: { normalResponseProvider: 'chatgpt' },
+        mediaDevices: { getDisplayMedia: async () => screen },
+    });
+    assert.equal(await harness.api.startCapture(5, 'medium', true, true), true);
+    assert.equal(
+        harness.calls.some(call => call.channel === 'storage:get-config'),
+        false
+    );
+    harness.listeners.get('provider-session-ended')({}, { code: 'chatgpt_account_changed', reason: 'Old account event' });
+    assert.equal(screen.videoTrack.stopped, false);
+    assert.equal(harness.app.ended, undefined);
     harness.api.stopCapture();
 });
 

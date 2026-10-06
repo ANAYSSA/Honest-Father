@@ -12,6 +12,7 @@ let microphoneStream = null;
 let captureGeneration = 0;
 let captureScreenOnly = false;
 let captureTestReview = false;
+let captureResponseProvider = 'gemini';
 let audioBuffer = [];
 const SAMPLE_RATE = 24000;
 const AUDIO_CHUNK_DURATION = 0.1; // seconds
@@ -277,6 +278,13 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
     try {
         await loadPreferencesCache();
         if (generation !== captureGeneration) return false;
+        if (!testReview && preferencesCache.providerMode !== 'local') {
+            const config = (await storage.getConfig()) || {};
+            if (generation !== captureGeneration) return false;
+            // Keep follow-ups on the provider chosen for this capture session even
+            // if Home's selection is edited while a request is in flight.
+            captureResponseProvider = config.normalResponseProvider === 'chatgpt' ? 'chatgpt' : 'gemini';
+        }
         const audioMode = preferencesCache.audioMode || 'speaker_only';
         const captureSystem = !screenOnly && audioMode !== 'mic_only';
         const captureMic = !screenOnly && (audioMode === 'mic_only' || audioMode === 'both');
@@ -1000,6 +1008,7 @@ function stopCapture(options) {
     }
     captureTestReview = false;
     captureScreenOnly = false;
+    captureResponseProvider = 'gemini';
     if (screenshotInterval) {
         clearInterval(screenshotInterval);
         screenshotInterval = null;
@@ -1055,7 +1064,8 @@ function stopCapture(options) {
 }
 
 ipcRenderer.on('provider-session-ended', (event, data) => {
-    if (captureScreenOnly && !(captureTestReview && data?.code === 'test_review')) return;
+    const chatgptDisconnected = captureResponseProvider === 'chatgpt' && data?.code === 'chatgpt_account_changed';
+    if (captureScreenOnly && !chatgptDisconnected && !(captureTestReview && data?.code === 'test_review')) return;
     stopCapture({ silentReviewEnd: true });
     cheatingDaddyApp.handleSessionEnded(data?.reason || 'Session ended. Start a new session to continue.');
 });
@@ -1068,7 +1078,7 @@ async function sendTextMessage(text) {
         return { success: false, error: 'Empty message' };
     }
 
-    if (captureScreenOnly) {
+    if (captureScreenOnly && captureResponseProvider !== 'chatgpt') {
         const success = await captureScreenshot(currentImageQuality, true, text.trim());
         return { success, completed: success, error: success ? undefined : 'Screen request failed. Check the session status and try again.' };
     }

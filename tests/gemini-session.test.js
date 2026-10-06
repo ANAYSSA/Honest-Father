@@ -19,6 +19,8 @@ function harness({
     platform = 'darwin',
     fetch: fetchMock = null,
     groqKey = '',
+    chatgptRespond = null,
+    chatgptPrepare = null,
     reviewOverlay = null,
     catalogue = null,
     catalogueError = null,
@@ -56,6 +58,7 @@ function harness({
     const connections = [];
     const clients = [];
     const requests = [];
+    const chatgptRequests = [];
     const catalogueRequests = [];
     const children = [];
     const stored = {
@@ -139,6 +142,15 @@ function harness({
             },
         },
         '../audioUtils': { saveDebugAudio: () => {} },
+        './chatgpt': {
+            prepareChatGPT: chatgptPrepare || (async () => ({ model: 'account-model', reasoningMode: 'standard' })),
+            respond: async options => {
+                chatgptRequests.push(options);
+                if (chatgptRespond) return chatgptRespond(options);
+                options.onText('The answer is 42.');
+                return 'The answer is 42.';
+            },
+        },
         './prompts': require('../src/utils/prompts'),
         './testReview': require('../src/utils/testReview'),
         '../storage': {
@@ -208,6 +220,7 @@ function harness({
         connections,
         clients,
         requests,
+        chatgptRequests,
         catalogueRequests,
         children,
         stored,
@@ -355,39 +368,37 @@ test('Gemini screenshots during a Live interview use a coding-capable instructio
     h.api.closeActiveSession();
 });
 
-test('Groq screenshots receive the same answer-first instruction and custom study context', async () => {
-    let body;
-    let done = false;
+test('normal Gemini screenshots ignore a legacy Groq key and retain the study context', async () => {
     const h = harness({
-        groqKey: 'unit-test-groq',
-        fetch: async (url, options) => {
-            body = JSON.parse(options.body);
-            return {
-                ok: true,
-                status: 200,
-                body: {
-                    getReader: () => ({
-                        read: async () => {
-                            if (done) return { done: true };
-                            done = true;
-                            return { done: false, value: Buffer.from(`data: ${JSON.stringify({ choices: [{ delta: { content: 'B. 42' } }] })}\n\n`) };
-                        },
-                    }),
-                },
-            };
+        groqKey: 'old-saved-key',
+        fetch: () => {
+            throw new Error('Legacy Groq must not be used');
         },
     });
     const custom = 'Course: algorithms. Show the final answer first.';
     await h.invoke('initialize-screen-session', 'exam', custom);
     const result = await h.invoke('send-image-content', { data: Buffer.alloc(1600).toString('base64'), prompt: 'Answer the practice question.' });
     assert.equal(result.success, true);
-    const system = body.messages[0].content;
-    assert.equal(body.messages[0].role, 'system');
-    assert.match(system, /exam preparation/);
-    assert.match(system, /Put the answer or solution first/);
-    assert.match(system, /complete runnable implementation/);
-    assert.ok(system.includes(custom));
-    assert.doesNotMatch(system, /exact words to say|sentences max|No coaching|no explanations/);
+    assert.equal(h.requests.length, 1);
+    assert.ok(h.requests[0].config.systemInstruction.includes(custom));
+});
+
+test('ChatGPT screen-only sessions need no Gemini key or Live connection and stream their answer', async () => {
+    const h = harness({ groqKey: 'old-saved-key' });
+    h.stored.apiKey = '';
+    h.stored.config.normalResponseProvider = 'chatgpt';
+    assert.equal(await h.invoke('initialize-screen-session', 'exam', 'Use Russian.'), true);
+    const result = await h.invoke('send-image-content', { data: Buffer.alloc(1600).toString('base64'), prompt: 'Solve this.' });
+    assert.equal(result.success, true);
+    assert.equal(h.chatgptRequests.length, 1);
+    assert.equal(h.chatgptRequests[0].model, 'account-model');
+    assert.match(h.chatgptRequests[0].instructions, /Use Russian/);
+    assert.equal(h.connections.length, 0);
+    assert.equal(h.requests.length, 0);
+    assert.equal(h.events.find(event => event.channel === 'new-response').data, 'The answer is 42.');
+    assert.equal((await h.invoke('send-text-message', 'Explain why.')).completed, true);
+    assert.equal(h.chatgptRequests.length, 2);
+    assert.equal(h.chatgptRequests[1].history.length, 2);
 });
 
 test('screen quota failure pauses follow-up calls without opening Live or hiding provider error', async () => {
@@ -430,64 +441,95 @@ test('a slow screenshot holds a single request slot and another screenshot is sk
     assert.equal((await first).success, true);
 });
 
-test('Groq screenshot streams survive JSON split across network chunks', async () => {
-    const event = `data: ${JSON.stringify({ choices: [{ delta: { content: 'Correct answer' } }] })}\n\ndata: [DONE]\n\n`;
-    const fragments = [event.slice(0, 25), event.slice(25, 46), event.slice(46)];
-    const h = harness({
-        groqKey: 'unit-test-groq',
-        fetch: async () => ({
-            ok: true,
-            status: 200,
-            body: {
-                getReader: () => ({ read: async () => (fragments.length ? { value: Buffer.from(fragments.shift()), done: false } : { done: true }) }),
-            },
-        }),
-    });
-    await h.invoke('initialize-screen-session');
-    const result = await h.invoke('send-image-content', { data: Buffer.alloc(1600).toString('base64'), prompt: 'Solve this.' });
-    assert.equal(result.text, 'Correct answer');
-    assert.equal(h.events.filter(event => event.channel === 'new-response')[0].data, 'Correct answer');
-    assert.equal(h.connections.length, 0);
-});
-
-test('closing a Groq screenshot aborts fetch and suppresses late response events', async () => {
+test('closing a ChatGPT screenshot aborts it and suppresses late response events', async () => {
     let release;
-    let signal;
-    let reads = 0;
     const wait = new Promise(resolve => {
         release = resolve;
     });
     const h = harness({
-        groqKey: 'unit-test-groq',
-        fetch: async (url, options) => {
-            signal = options.signal;
-            return {
-                ok: true,
-                status: 200,
-                body: {
-                    getReader: () => ({
-                        read: async () => {
-                            if (reads++) return { done: true };
-                            await wait;
-                            return {
-                                done: false,
-                                value: Buffer.from(`data: ${JSON.stringify({ choices: [{ delta: { content: 'Old answer' } }] })}\n\n`),
-                            };
-                        },
-                    }),
-                },
-            };
+        chatgptRespond: async options => {
+            await wait;
+            options.onText('Old answer');
+            return 'Old answer';
         },
     });
+    h.stored.config.normalResponseProvider = 'chatgpt';
     await h.invoke('initialize-screen-session');
     const screenshot = h.invoke('send-image-content', { data: Buffer.alloc(1600).toString('base64'), prompt: 'Solve this.' });
     await flush();
+    assert.equal((await h.invoke('send-text-message', 'Again')).code, 'busy');
     await h.invoke('close-session', { silent: true });
-    assert.equal(signal.aborted, true);
+    assert.equal(h.chatgptRequests[0].signal.aborted, true);
     release();
     assert.equal((await screenshot).code, 'cancelled');
     assert.equal(h.events.filter(event => event.channel === 'new-response').length, 0);
     assert.equal(h.events.filter(event => event.channel === 'save-screen-analysis').length, 0);
+});
+
+test('ChatGPT preparation cancelled by session close cannot reactivate the session', async () => {
+    let release;
+    const wait = new Promise(resolve => {
+        release = resolve;
+    });
+    const h = harness({
+        chatgptPrepare: async () => {
+            await wait;
+            return { model: 'account-model' };
+        },
+    });
+    h.stored.config.normalResponseProvider = 'chatgpt';
+    const start = h.invoke('initialize-screen-session');
+    await flush();
+    h.api.closeActiveSession();
+    release();
+    assert.equal(await start, false);
+    assert.equal(h.api.isChatGPTSession(), false);
+});
+
+test('Gemini Live transcriptions use ChatGPT only once and suppress Gemini answer text', async () => {
+    const h = harness();
+    h.stored.config.normalResponseProvider = 'chatgpt';
+    assert.equal(await h.invoke('initialize-gemini', 'test-key'), true);
+    const message = h.connections[0].callbacks.onmessage;
+    message({ serverContent: { inputTranscription: { text: 'Practice question', finished: true }, outputTranscription: { text: 'Do not show' } } });
+    await flush();
+    message({ serverContent: { turnComplete: true } });
+    await flush();
+    assert.equal(h.chatgptRequests.length, 1);
+    assert.equal(h.chatgptRequests[0].prompt, 'Practice question');
+    assert.equal(
+        h.events.some(event => event.data === 'Do not show'),
+        false
+    );
+});
+
+test('ChatGPT quota failure clears queued speech, pauses new calls, and keeps the actionable status', async () => {
+    let release;
+    const wait = new Promise(resolve => {
+        release = resolve;
+    });
+    const h = harness({
+        chatgptRespond: async () => {
+            await wait;
+            throw Object.assign(new Error('ChatGPT app usage limit reached.'), { status: 429, code: 'subscription_sharing_usage_limit_exceeded' });
+        },
+    });
+    h.stored.config.normalResponseProvider = 'chatgpt';
+    await h.invoke('initialize-gemini', 'test-key');
+    const message = h.connections[0].callbacks.onmessage;
+    message({ serverContent: { inputTranscription: { text: 'First question', finished: true } } });
+    message({ serverContent: { turnComplete: true } });
+    message({ serverContent: { inputTranscription: { text: 'Queued question', finished: true } } });
+    release();
+    await flush();
+    message({ serverContent: { turnComplete: true } });
+    message({ serverContent: { inputTranscription: { text: 'Later question', finished: true } } });
+    await flush();
+    assert.equal(h.chatgptRequests.length, 1);
+    assert.equal((await h.invoke('send-text-message', 'Manual attempt')).code, 'subscription_sharing_usage_limit_exceeded');
+    assert.equal(h.chatgptRequests.length, 1);
+    assert.equal(h.events.filter(event => event.channel === 'update-status').at(-1).data, 'ChatGPT app usage limit reached.');
+    h.api.closeActiveSession();
 });
 
 test('setup timeout closes the candidate and allows another fresh initialization', async () => {
@@ -620,6 +662,7 @@ test('test review caches complete validated JSON without streaming normal answer
             yield { text: reviewJson.slice(60) };
         },
     });
+    h.stored.config.normalResponseProvider = 'chatgpt';
     await startReview(h, manager);
     const result = await h.invoke('send-image-content', reviewPayload());
     assert.equal(result.success, true);

@@ -1,6 +1,7 @@
 const { GoogleGenAI, Modality } = require('@google/genai');
 const { ipcMain, net } = require('electron');
 const { spawn } = require('child_process');
+const chatgpt = require('./chatgpt');
 const { saveDebugAudio } = require('../audioUtils');
 const { getSystemPrompt, getScreenshotSystemPrompt } = require('./prompts');
 const { REVIEW_SYSTEM_PROMPT, REVIEW_USER_PROMPT, parseReviewAnswer } = require('./testReview');
@@ -40,6 +41,13 @@ function getLocalAi() {
 // Provider mode: 'byok', 'cloud', or 'local'
 let currentProviderMode = 'byok';
 let currentScreenMode = 'text';
+let currentResponseProvider = 'gemini';
+let chatgptOptions = null;
+let chatgptController = null;
+let pendingChatGPTTranscription = '';
+let chatgptAutomaticPaused = false;
+let chatgptPausedError = null;
+let chatgptConversationHistory = [];
 let rendererWindow = null;
 let reviewOverlay = null;
 
@@ -263,18 +271,84 @@ function hasGroqKey() {
     return key && key.trim() != '';
 }
 
-function sendFinalTranscriptionToGroq() {
-    if (!hasGroqKey() || groqRequestStartedForTurn) {
-        return;
-    }
+function isChatGPTSession() {
+    return currentProviderMode === 'byok' && currentScreenMode !== 'test-review' && currentResponseProvider === 'chatgpt';
+}
 
-    const transcription = currentTranscription.trim();
-    if (transcription === '') {
-        return;
-    }
-
+function sendFinalTranscriptionToChatGPT() {
+    if (!isChatGPTSession() || chatgptAutomaticPaused || groqRequestStartedForTurn || !currentTranscription.trim()) return;
     groqRequestStartedForTurn = true;
-    sendToGroq(transcription);
+    if (chatgptController) {
+        pendingChatGPTTranscription = [pendingChatGPTTranscription, currentTranscription.trim()].filter(Boolean).join('\n').slice(-32000);
+        return;
+    }
+    void sendToChatGPT(currentTranscription.trim());
+}
+
+async function sendToChatGPT(prompt, imageBase64) {
+    if (!isChatGPTSession() || !chatgptOptions) return { success: false, error: 'Start a ChatGPT session first.' };
+    if (chatgptPausedError) return { ...chatgptPausedError };
+    if (chatgptController) return { success: false, code: 'busy', error: 'ChatGPT is still answering. Wait for the current response.' };
+    const controller = new AbortController();
+    chatgptController = controller;
+    const generation = sessionGeneration;
+    const isCurrent = () => generation === sessionGeneration && !controller.signal.aborted;
+    let first = true;
+    try {
+        const history = chatgptConversationHistory.slice(-8);
+        const text = await chatgpt.respond({
+            ...chatgptOptions,
+            prompt,
+            imageBase64,
+            mimeType: 'image/jpeg',
+            history,
+            instructions: imageBase64
+                ? getScreenshotSystemPrompt(currentProfile || 'interview', currentCustomPrompt || '')
+                : currentSystemPrompt || 'Answer clearly and concisely.',
+            signal: controller.signal,
+            onText(text) {
+                if (!isCurrent()) return;
+                sendToRenderer(first ? 'new-response' : 'update-response', text);
+                first = false;
+            },
+        });
+        if (!isCurrent()) return { success: true, skipped: true, code: 'cancelled' };
+        if (imageBase64) saveScreenAnalysis(prompt, text, chatgptOptions.model);
+        else saveConversationTurn(prompt, text);
+        chatgptConversationHistory.push({ role: 'user', content: prompt.slice(-6000) }, { role: 'assistant', content: text.slice(-6000) });
+        chatgptConversationHistory = chatgptConversationHistory.slice(-8);
+        chatgptAutomaticPaused = false;
+        sendToRenderer('update-status', 'Ready');
+        return { success: true, completed: true, text, model: chatgptOptions.model };
+    } catch (error) {
+        if (!isCurrent()) return { success: true, skipped: true, code: 'cancelled' };
+        const message = error.message || 'ChatGPT request failed. Try again.';
+        chatgptAutomaticPaused = true;
+        pendingChatGPTTranscription = '';
+        const result = { success: false, error: message, code: error.code };
+        if (
+            [401, 403, 429].includes(error.status) ||
+            [
+                'subscription_sharing_usage_limit_exceeded',
+                'subscription_sharing_user_not_eligible',
+                'subscription_sharing_unsupported_capability',
+                'model_unavailable',
+                'unsupported_pro',
+                'sign_in_required',
+                'plan_permission_required',
+            ].includes(error.code)
+        )
+            chatgptPausedError = result;
+        sendToRenderer('update-status', message);
+        return result;
+    } finally {
+        if (chatgptController === controller) chatgptController = null;
+        if (isCurrent() && !chatgptAutomaticPaused && pendingChatGPTTranscription) {
+            const pending = pendingChatGPTTranscription;
+            pendingChatGPTTranscription = '';
+            void sendToChatGPT(pending);
+        }
+    }
 }
 
 function trimConversationHistoryForGemma(history, maxChars = 42000) {
@@ -735,6 +809,18 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
     }
     if (!isReconnect) {
         closeActiveSession();
+        const preparingGeneration = sessionGeneration;
+        currentResponseProvider = getConfig().normalResponseProvider === 'chatgpt' ? 'chatgpt' : 'gemini';
+        if (isChatGPTSession()) {
+            try {
+                const prepared = await chatgpt.prepareChatGPT();
+                if (preparingGeneration !== sessionGeneration) return null;
+                chatgptOptions = prepared;
+            } catch (error) {
+                if (preparingGeneration === sessionGeneration) sendToRenderer('update-status', error.message);
+                return null;
+            }
+        }
         isUserClosing = false;
         sessionParams = { apiKey: apiKey.trim(), customPrompt, profile, language };
         reconnectController.reset();
@@ -851,10 +937,10 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
                         }
 
                         if (message.serverContent?.inputTranscription?.finished) {
-                            sendFinalTranscriptionToGroq();
+                            sendFinalTranscriptionToChatGPT();
                         }
 
-                        if (!hasGroqKey() && message.serverContent?.outputTranscription?.text) {
+                        if (!isChatGPTSession() && message.serverContent?.outputTranscription?.text) {
                             const isFirstChunk = messageBuffer === '';
                             messageBuffer += message.serverContent.outputTranscription.text;
                             sendToRenderer(isFirstChunk ? 'new-response' : 'update-response', messageBuffer);
@@ -864,14 +950,15 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
                             messageBuffer = '';
                         }
                         if (message.serverContent?.turnComplete) {
-                            sendFinalTranscriptionToGroq();
-                            if (!hasGroqKey() && currentTranscription.trim() && messageBuffer.trim()) {
+                            sendFinalTranscriptionToChatGPT();
+                            if (!isChatGPTSession() && currentTranscription.trim() && messageBuffer.trim()) {
                                 saveConversationTurn(currentTranscription, messageBuffer);
                             }
                             currentTranscription = '';
                             messageBuffer = '';
                             groqRequestStartedForTurn = false;
-                            sendToRenderer('update-status', 'Listening...');
+                            if (!isChatGPTSession() || (!chatgptAutomaticPaused && !chatgptController))
+                                sendToRenderer('update-status', 'Listening...');
                             if (goAwayPending) connectionFailed({ code: 1000, message: 'Scheduled Gemini connection renewal' });
                         }
                     },
@@ -979,6 +1066,14 @@ function closeConnection(session) {
 // Synchronous shutdown hook used by End and Electron before-quit.
 function closeActiveSession(geminiSessionRef = global.geminiSessionRef) {
     currentScreenMode = 'text';
+    currentResponseProvider = 'gemini';
+    chatgptOptions = null;
+    chatgptController?.abort();
+    chatgptController = null;
+    pendingChatGPTTranscription = '';
+    chatgptAutomaticPaused = false;
+    chatgptPausedError = null;
+    chatgptConversationHistory = [];
     reviewOverlay?.end(undefined, false);
     isUserClosing = true;
     sessionGeneration++;
@@ -1331,6 +1426,11 @@ async function sendImageToGeminiHttp(base64Data, prompt, { testReview = false } 
 function setupGeminiIpcHandlers(geminiSessionRef) {
     // Store the geminiSessionRef globally for reconnection access
     global.geminiSessionRef = geminiSessionRef;
+    const trustedSender = event =>
+        rendererWindow &&
+        !rendererWindow.isDestroyed() &&
+        event.sender === rendererWindow.webContents &&
+        event.senderFrame === rendererWindow.webContents.mainFrame;
 
     ipcMain.handle('initialize-screen-session', async (event, profile = 'interview', customPrompt = '', mode = 'text') => {
         if (
@@ -1342,8 +1442,10 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
             sendToRenderer('update-status', 'Invalid screen session settings.');
             return false;
         }
-        if (!getApiKey()?.trim() && !hasGroqKey()) {
-            sendToRenderer('update-status', 'Enter a Gemini or Groq API key in Home before starting.');
+        if (!trustedSender(event)) return false;
+        const useChatGPT = mode !== 'test-review' && getConfig().normalResponseProvider === 'chatgpt';
+        if (!useChatGPT && !getApiKey()?.trim() && !(mode === 'test-review' && hasGroqKey())) {
+            sendToRenderer('update-status', 'Enter a Gemini API key in Home before starting.');
             return false;
         }
         closeActiveSession(geminiSessionRef);
@@ -1352,6 +1454,18 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
         if (currentProviderMode === 'cloud') closeCloud();
         currentProviderMode = 'byok';
         currentScreenMode = mode;
+        currentResponseProvider = useChatGPT ? 'chatgpt' : 'gemini';
+        if (useChatGPT) {
+            const preparingGeneration = sessionGeneration;
+            try {
+                const prepared = await chatgpt.prepareChatGPT();
+                if (preparingGeneration !== sessionGeneration) return false;
+                chatgptOptions = prepared;
+            } catch (error) {
+                if (preparingGeneration === sessionGeneration) sendToRenderer('update-status', error.message);
+                return false;
+            }
+        }
         initializeNewSession(profile, customPrompt);
         currentSystemPrompt = getScreenshotSystemPrompt(profile, customPrompt);
         sendToRenderer('update-status', 'Screen ready');
@@ -1379,6 +1493,7 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
     });
 
     ipcMain.handle('initialize-gemini', async (event, apiKey, customPrompt, profile = 'interview', language = 'en-US') => {
+        if (!trustedSender(event)) return false;
         currentProviderMode = 'byok';
         const session = await initializeGeminiSession(apiKey, customPrompt, profile, language);
         if (session) {
@@ -1457,6 +1572,7 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
 
     ipcMain.handle('send-image-content', async (event, payload = {}) => {
         try {
+            if (isChatGPTSession() && !trustedSender(event)) return { success: false, error: 'Untrusted ChatGPT request.' };
             const { data, reviewCapture, imageWidth, imageHeight } = payload;
             const testReview = currentScreenMode === 'test-review';
             const prompt = testReview ? REVIEW_USER_PROMPT : payload.prompt;
@@ -1501,9 +1617,11 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
                 return result;
             }
 
-            const result = hasGroqKey()
-                ? await sendImageToGroq(data, prompt, { testReview })
-                : await sendImageToGeminiHttp(data, prompt, { testReview });
+            const result = isChatGPTSession()
+                ? await sendToChatGPT(prompt, data)
+                : testReview && hasGroqKey()
+                  ? await sendImageToGroq(data, prompt, { testReview })
+                  : await sendImageToGeminiHttp(data, prompt, { testReview });
             if (testReview && result.success && !result.skipped) {
                 const answer = parseReviewAnswer(result.text);
                 const cached = reviewOverlay.cacheAnswer(reviewCapture, answer, { imageWidth, imageHeight });
@@ -1518,7 +1636,8 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
     });
 
     ipcMain.handle('send-text-message', async (event, text) => {
-        if (!text || typeof text !== 'string' || text.trim().length === 0) {
+        if (isChatGPTSession() && !trustedSender(event)) return { success: false, error: 'Untrusted ChatGPT request.' };
+        if (!text || typeof text !== 'string' || text.trim().length === 0 || text.length > 32000) {
             return { success: false, error: 'Invalid text message' };
         }
 
@@ -1543,15 +1662,11 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
             }
         }
 
+        if (isChatGPTSession()) return sendToChatGPT(text.trim());
         if (!geminiSessionRef.current) return { success: false, error: 'No active Gemini session' };
 
         try {
             console.log('Sending text message:', text);
-
-            if (hasGroqKey()) {
-                groqRequestStartedForTurn = true;
-                sendToGroq(text.trim());
-            }
 
             currentTranscription = text.trim();
             await geminiSessionRef.current.sendClientContent({ turns: [{ role: 'user', parts: [{ text: text.trim() }] }], turnComplete: true });
@@ -1652,6 +1767,7 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
 module.exports = {
     setMainWindow,
     initializeGeminiSession,
+    isChatGPTSession,
     getEnabledTools,
     getStoredSetting,
     sendToRenderer,

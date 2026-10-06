@@ -11,7 +11,14 @@ const timeout = setTimeout(() => {
     console.error('Smoke test timed out.');
     app.exit(1);
 }, 30000);
-app.on('before-quit', () => console.log('Smoke lifecycle: before-quit'));
+let smokeCompleted = false;
+app.on('before-quit', () => {
+    console.log('Smoke lifecycle: before-quit');
+    if (!smokeCompleted) {
+        console.error('Smoke test exited before its assertions completed.');
+        app.exit(1);
+    }
+});
 app.on('will-quit', () => console.log('Smoke lifecycle: will-quit'));
 app.on('quit', (_event, code) => console.log('Smoke lifecycle: quit', code));
 process.on('exit', code => {
@@ -91,11 +98,67 @@ app.whenReady().then(async () => {
             await app.handleClose();
             window.cheatingDaddy.captureManualScreenshot = originalScreenshot;
             window.cheatingDaddy.startCapture = originalCapture;
+            await app.updateComplete;
+            const chatHome = app.shadowRoot.querySelector('main-view');
+            await chatHome._storageLoad;
+            await chatHome.updateComplete;
+            const providerSelect = chatHome.shadowRoot.querySelector('#normal-response-provider');
+            const normalProviderChoice = Boolean(providerSelect) &&
+                Array.from(providerSelect.options).map(option => option.value).join(',') === 'gemini,chatgpt';
+            const noGroqMenu = !chatHome.shadowRoot.textContent.includes('Groq');
+            const originalScreenInitialize = window.cheatingDaddy.initializeScreenSession;
+            const originalHomeStart = chatHome.onStart;
+            let chatgptScreenStart = false;
+            let chatgptDisconnectedBlocked = false;
+            let chatgptProviderFailureBlocked = false;
+            try {
+                await window.cheatingDaddy.storage.setApiKey('');
+                chatHome._geminiKey = '';
+                providerSelect.value = 'chatgpt';
+                providerSelect.dispatchEvent(new Event('change'));
+                for (let i = 0; i < 100 && chatHome._providerSaving; i++) await new Promise(resolve => setTimeout(resolve, 10));
+                await chatHome.updateComplete;
+                let chatStarts = 0;
+                chatHome.onStart = () => { chatStarts++; };
+                chatHome._chatgptStatus = { connected: false, planEnabled: false };
+                chatHome._handleStart();
+                await chatHome.updateComplete;
+                chatgptDisconnectedBlocked = chatStarts === 0 &&
+                    chatHome.shadowRoot.textContent.includes('Continue with ChatGPT and allow plan usage');
+                chatHome._chatgptStatus = { connected: true, planEnabled: true };
+                chatHome._chatgptModels = [{ id: 'smoke-model', name: 'Smoke model', supportsPro: false }];
+                chatHome._chatgptModel = 'smoke-model';
+                let started;
+                chatHome.onStart = () => { started = app.handleStart(); };
+                let chatCaptureCalls = 0;
+                let captureWasScreenOnly = false;
+                window.cheatingDaddy.initializeScreenSession = async () => false;
+                window.cheatingDaddy.startCapture = async (_interval, _quality, onlyScreen, review) => {
+                    chatCaptureCalls++;
+                    captureWasScreenOnly = onlyScreen === true && review !== true;
+                    return true;
+                };
+                chatHome._handleStart();
+                await started;
+                chatgptProviderFailureBlocked = !app.sessionActive && chatCaptureCalls === 0;
+                window.cheatingDaddy.initializeScreenSession = async () => true;
+                await app.handleStart();
+                chatgptScreenStart = app.sessionActive && !app.testReview && chatCaptureCalls === 1 && captureWasScreenOnly;
+                if (!chatgptScreenStart) throw new Error('Mocked ChatGPT normal start failed: ' + app.statusText);
+                await app.handleClose();
+            } finally {
+                chatHome.onStart = originalHomeStart;
+                window.cheatingDaddy.initializeScreenSession = originalScreenInitialize;
+                window.cheatingDaddy.startCapture = originalCapture;
+                await window.cheatingDaddy.storage.updateConfig('normalResponseProvider', 'gemini');
+                await window.cheatingDaddy.storage.setApiKey('isolated-smoke-key');
+            }
             return {
                 loaded: app._storageLoaded,
                 title: document.title,
                 settings: Boolean(settings),
                 quitVisible, rejectsFailedProvider, rejectsFailedCapture, cancelsLateStartup, screenShortcutWorks, reviewButtonVisible, reviewStartWorks,
+                normalProviderChoice, noGroqMenu, chatgptScreenStart, chatgptDisconnectedBlocked, chatgptProviderFailureBlocked,
                 api: typeof window.cheatingDaddy.initializeGemini,
             };
         })()`);
@@ -110,6 +173,11 @@ app.whenReady().then(async () => {
         assert.equal(result.screenShortcutWorks, true);
         assert.equal(result.reviewButtonVisible, true);
         assert.equal(result.reviewStartWorks, true);
+        assert.equal(result.normalProviderChoice, true, 'Home offers Gemini API and ChatGPT account for normal sessions');
+        assert.equal(result.noGroqMenu, true, 'Groq is removed from Home');
+        assert.equal(result.chatgptScreenStart, true, 'ChatGPT normal start without Gemini uses screen-only capture');
+        assert.equal(result.chatgptDisconnectedBlocked, true, 'Disconnected ChatGPT shows an actionable sign-in message');
+        assert.equal(result.chatgptProviderFailureBlocked, true, 'Failed ChatGPT initialization does not acquire the screen');
         // Capture a separate static synthetic tab, so hiding the Review renderer
         // does not also stop its source. No desktop pixels, audio, OS capture
         // permission, external browser, or provider are used.
@@ -348,6 +416,7 @@ app.whenReady().then(async () => {
         assert.equal(BrowserWindow.getAllWindows().length, 1, 'Ending review destroys its overlay');
         assert.deepEqual(errors, []);
         console.log('Honest Father Electron smoke passed:', JSON.stringify(result));
+        smokeCompleted = true;
         app.quit();
     } catch (error) {
         console.error(error);

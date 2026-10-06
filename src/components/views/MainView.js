@@ -477,6 +477,33 @@ export class MainView extends LitElement {
             color: var(--text-primary);
         }
 
+        .chatgpt-sign-in {
+            background: #fff;
+            color: #111;
+            border: 1px solid #ddd;
+            border-radius: var(--radius-sm);
+            padding: 11px 14px;
+            font-size: var(--font-size-sm);
+            font-weight: var(--font-weight-medium);
+            cursor: pointer;
+        }
+
+        .account-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: var(--space-md);
+        }
+
+        .account-actions .mode-link {
+            font-size: var(--font-size-xs);
+        }
+
+        .chatgpt-sign-in:disabled,
+        .account-actions button:disabled {
+            opacity: 0.5;
+            cursor: default;
+        }
+
         /* ── Mode option cards ── */
 
         .mode-cards {
@@ -698,13 +725,20 @@ export class MainView extends LitElement {
         _mode: { state: true },
         _token: { state: true },
         _geminiKey: { state: true },
-        _groqKey: { state: true },
         _openaiKey: { state: true },
         _geminiLiveModel: { state: true },
         _geminiImageModel: { state: true },
-        _groqModel: { state: true },
-        _groqImageModel: { state: true },
-        _disableGroqThinking: { state: true },
+        _normalResponseProvider: { state: true },
+        _chatgptStatus: { state: true },
+        _chatgptModels: { state: true },
+        _chatgptModel: { state: true },
+        _chatgptReasoningMode: { state: true },
+        _chatgptUseTranscription: { state: true },
+        _chatgptBusy: { state: true },
+        _chatgptModelsLoading: { state: true },
+        _chatgptError: { state: true },
+        _providerSaving: { state: true },
+        _showChatGPTPlanNotice: { state: true },
         _tokenError: { state: true },
         _keyError: { state: true },
         // Local AI state
@@ -730,13 +764,23 @@ export class MainView extends LitElement {
         this._mode = 'byok';
         this._token = '';
         this._geminiKey = '';
-        this._groqKey = '';
         this._openaiKey = '';
         this._geminiLiveModel = 'auto';
         this._geminiImageModel = 'auto';
-        this._groqModel = 'qwen/qwen3.6-27b';
-        this._groqImageModel = 'qwen/qwen3.6-27b';
-        this._disableGroqThinking = true;
+        this._normalResponseProvider = 'gemini';
+        this._chatgptStatus = { connected: false, planEnabled: false, connecting: false };
+        this._chatgptModels = [];
+        this._chatgptModel = '';
+        this._chatgptReasoningMode = 'standard';
+        this._chatgptUseTranscription = false;
+        this._chatgptBusy = false;
+        this._chatgptModelsLoading = false;
+        this._chatgptError = '';
+        this._providerSaving = false;
+        this._chatgptModelsGeneration = 0;
+        this._chatgptPlanNoticeDismissed = false;
+        this._showChatGPTPlanNotice = false;
+        this._storageLoaded = false;
         this._tokenError = false;
         this._keyError = false;
         this._showLocalHelp = false;
@@ -750,7 +794,7 @@ export class MainView extends LitElement {
         this._mouseY = -1;
 
         this.boundKeydownHandler = this._handleKeydown.bind(this);
-        this._loadFromStorage();
+        this._storageLoad = this._loadFromStorage();
     }
 
     async _loadFromStorage() {
@@ -771,13 +815,14 @@ export class MainView extends LitElement {
             // Load keys
             this._token = creds.cloudToken || '';
             this._geminiKey = (await cheatingDaddy.storage.getApiKey().catch(() => '')) || '';
-            this._groqKey = (await cheatingDaddy.storage.getGroqApiKey().catch(() => '')) || '';
             this._openaiKey = creds.openaiKey || '';
             this._geminiLiveModel = config.geminiLiveModel || 'auto';
             this._geminiImageModel = config.geminiImageModel || 'auto';
-            this._groqModel = config.groqModel || 'qwen/qwen3.6-27b';
-            this._groqImageModel = config.groqImageModel || 'qwen/qwen3.6-27b';
-            this._disableGroqThinking = config.disableGroqThinking === true;
+            this._normalResponseProvider = config.normalResponseProvider === 'chatgpt' ? 'chatgpt' : 'gemini';
+            this._chatgptModel = config.chatgptModel || '';
+            this._chatgptReasoningMode = config.chatgptReasoningMode === 'pro' ? 'pro' : 'standard';
+            this._chatgptUseTranscription = config.chatgptUseTranscription === true;
+            this._chatgptPlanNoticeDismissed = config.chatgptPlanNoticeDismissed === true;
 
             // Load local AI settings
             this._localLlmModel = prefs.localLlmModel || 'unsloth/Qwen3.5-4B-GGUF:Q4_K_M';
@@ -787,17 +832,25 @@ export class MainView extends LitElement {
             this.requestUpdate();
         } catch (e) {
             console.error('Error loading MainView storage:', e);
+        } finally {
+            this._storageLoaded = true;
         }
     }
 
     connectedCallback() {
         super.connectedCallback();
         document.addEventListener('keydown', this.boundKeydownHandler);
+        this._chatgptIpc = window.require('electron').ipcRenderer;
+        this._chatgptStatusListener = (_event, status) => this._applyChatGPTStatus(status);
+        this._chatgptIpc.on('chatgpt-status-changed', this._chatgptStatusListener);
+        this._storageLoad.then(() => this._refreshChatGPTStatus());
     }
 
     disconnectedCallback() {
         super.disconnectedCallback();
         document.removeEventListener('keydown', this.boundKeydownHandler);
+        this._chatgptIpc?.removeListener('chatgpt-status-changed', this._chatgptStatusListener);
+        this._chatgptModelsGeneration += 1;
         if (this._animId) cancelAnimationFrame(this._animId);
     }
 
@@ -946,21 +999,9 @@ export class MainView extends LitElement {
         this.requestUpdate();
     }
 
-    async _saveGroqKey(val) {
-        this._groqKey = val;
-        await cheatingDaddy.storage.setGroqApiKey(val);
-        this.requestUpdate();
-    }
-
     async _saveGeminiLiveModel(val) {
         this._geminiLiveModel = val;
         await cheatingDaddy.storage.updateConfig('geminiLiveModel', val);
-        this.requestUpdate();
-    }
-
-    async _saveGroqModel(val) {
-        this._groqModel = val;
-        await cheatingDaddy.storage.updateConfig('groqModel', val);
         this.requestUpdate();
     }
 
@@ -970,16 +1011,184 @@ export class MainView extends LitElement {
         this.requestUpdate();
     }
 
-    async _saveGroqImageModel(val) {
-        this._groqImageModel = val;
-        await cheatingDaddy.storage.updateConfig('groqImageModel', val);
-        this.requestUpdate();
+    async _saveNormalResponseProvider(provider) {
+        if (this._providerSaving || !['gemini', 'chatgpt'].includes(provider)) return;
+        this._providerSaving = true;
+        this._chatgptError = '';
+        try {
+            await cheatingDaddy.storage.updateConfig('normalResponseProvider', provider);
+            this._normalResponseProvider = provider;
+            this._keyError = false;
+            if (provider === 'chatgpt') await this._refreshChatGPTStatus();
+        } catch {
+            this._chatgptError = 'Could not save the AI provider. Try again.';
+        } finally {
+            this._providerSaving = false;
+        }
     }
 
-    async _saveDisableGroqThinking(disabled) {
-        this._disableGroqThinking = disabled;
-        await cheatingDaddy.storage.updateConfig('disableGroqThinking', disabled);
-        this.requestUpdate();
+    _applyChatGPTStatus(status) {
+        if (!status || typeof status !== 'object') return;
+        const previous = this._chatgptStatus;
+        this._chatgptStatus = {
+            connected: status.connected === true,
+            planEnabled: status.planEnabled === true,
+            connecting: status.connecting === true,
+            email: typeof status.email === 'string' ? status.email : '',
+            activeAccountId: typeof status.activeAccountId === 'string' ? status.activeAccountId : '',
+        };
+        if (status.error) this._chatgptError = status.error;
+        const identityChanged = previous.activeAccountId !== this._chatgptStatus.activeAccountId || previous.email !== this._chatgptStatus.email;
+        if (!this._chatgptStatus.connected || !this._chatgptStatus.planEnabled || identityChanged) {
+            this._chatgptModelsGeneration += 1;
+            this._chatgptModels = [];
+            this._chatgptModelsLoading = false;
+            this._chatgptModelsPromise = null;
+        }
+        if (this._storageLoaded && this._chatgptStatus.connected && this._chatgptStatus.planEnabled) {
+            this._showChatGPTPlanNotice = !this._chatgptPlanNoticeDismissed;
+            if (identityChanged || !previous.connected || !previous.planEnabled) this._loadChatGPTModels();
+        } else if (!this._chatgptStatus.connected) {
+            this._showChatGPTPlanNotice = false;
+        }
+    }
+
+    async _refreshChatGPTStatus() {
+        try {
+            const status = await this._chatgptIpc.invoke('chatgpt-status');
+            if (status?.success === false) throw new Error(status.error || 'ChatGPT is unavailable.');
+            this._applyChatGPTStatus(status);
+            if (this._chatgptStatus.connected && this._chatgptStatus.planEnabled && !this._chatgptModels.length) {
+                await this._loadChatGPTModels();
+            }
+        } catch (error) {
+            this._chatgptError = error.message || 'Could not check the ChatGPT connection. Try again.';
+        }
+    }
+
+    async _loadChatGPTModels(force = false) {
+        if (this._chatgptModelsPromise) return this._chatgptModelsPromise;
+        if (!this._chatgptStatus.connected || !this._chatgptStatus.planEnabled) return;
+        const generation = ++this._chatgptModelsGeneration;
+        this._chatgptModelsLoading = true;
+        this._chatgptError = '';
+        const operation = async () => {
+            try {
+                const result = await this._chatgptIpc.invoke('chatgpt-models', { force });
+                if (generation !== this._chatgptModelsGeneration) return;
+                if (!result?.success) throw new Error(result?.error || 'Could not load ChatGPT models.');
+                this._chatgptModels = (Array.isArray(result.models) ? result.models : []).filter(
+                    model => typeof model.id === 'string' && typeof model.name === 'string'
+                );
+                const selected = this._chatgptModels.find(model => model.id === (result.selectedModel || this._chatgptModel));
+                this._chatgptModel = selected?.id || '';
+                if (!selected) this._chatgptError = 'No ChatGPT models are available for this account. Manage usage or try another account.';
+                if (this._chatgptReasoningMode === 'pro' && !selected?.supportsPro) {
+                    this._chatgptReasoningMode = 'standard';
+                    await cheatingDaddy.storage.updateConfig('chatgptReasoningMode', 'standard');
+                }
+            } catch (error) {
+                if (generation === this._chatgptModelsGeneration) this._chatgptError = error.message || 'Could not load ChatGPT models.';
+            } finally {
+                if (generation === this._chatgptModelsGeneration) {
+                    this._chatgptModelsLoading = false;
+                    this._chatgptModelsPromise = null;
+                }
+            }
+        };
+        this._chatgptModelsPromise = operation();
+        return this._chatgptModelsPromise;
+    }
+
+    async _signInChatGPT(newAccount = false) {
+        if (this._chatgptBusy || this._chatgptStatus.connecting) return;
+        this._chatgptBusy = true;
+        this._chatgptError = '';
+        try {
+            const result = await this._chatgptIpc.invoke('chatgpt-sign-in', { newAccount });
+            if (!result?.success) throw new Error(result?.error || 'ChatGPT sign-in did not finish. Try again.');
+            await this._refreshChatGPTStatus();
+        } catch (error) {
+            this._chatgptError = error.message || 'ChatGPT sign-in did not finish. Try again.';
+        } finally {
+            this._chatgptBusy = false;
+        }
+    }
+
+    async _signOutChatGPT() {
+        if (this._chatgptBusy) return;
+        this._chatgptBusy = true;
+        this._chatgptError = '';
+        try {
+            const result = await this._chatgptIpc.invoke('chatgpt-sign-out');
+            if (!result?.success) throw new Error(result?.error || 'Could not sign out. Try again.');
+            this._applyChatGPTStatus({ connected: false });
+            if (result.warning) this._chatgptError = result.warning;
+        } catch (error) {
+            this._chatgptError = error.message || 'Could not sign out. Try again.';
+        } finally {
+            this._chatgptBusy = false;
+        }
+    }
+
+    async _saveChatGPTModel(id) {
+        const model = this._chatgptModels.find(item => item.id === id);
+        if (!model || this._providerSaving || this._chatgptModelsLoading) return;
+        this._providerSaving = true;
+        this._chatgptError = '';
+        try {
+            if (!model.supportsPro && this._chatgptReasoningMode === 'pro') {
+                await cheatingDaddy.storage.updateConfig('chatgptReasoningMode', 'standard');
+                this._chatgptReasoningMode = 'standard';
+            }
+            await cheatingDaddy.storage.updateConfig('chatgptModel', id);
+            this._chatgptModel = id;
+        } catch {
+            this._chatgptError = 'Could not save the ChatGPT model. Try again.';
+        } finally {
+            this._providerSaving = false;
+        }
+    }
+
+    async _saveChatGPTReasoningMode(mode) {
+        if (this._providerSaving || !['standard', 'pro'].includes(mode)) return;
+        const model = this._chatgptModels.find(item => item.id === this._chatgptModel);
+        if (mode === 'pro' && !model?.supportsPro) return;
+        this._providerSaving = true;
+        this._chatgptError = '';
+        try {
+            await cheatingDaddy.storage.updateConfig('chatgptReasoningMode', mode);
+            this._chatgptReasoningMode = mode;
+        } catch {
+            this._chatgptError = 'Could not save the response mode. Try again.';
+        } finally {
+            this._providerSaving = false;
+        }
+    }
+
+    async _saveChatGPTUseTranscription(enabled) {
+        if (this._providerSaving) return;
+        this._providerSaving = true;
+        this._chatgptError = '';
+        try {
+            await cheatingDaddy.storage.updateConfig('chatgptUseTranscription', enabled === true);
+            this._chatgptUseTranscription = enabled === true;
+        } catch {
+            this._chatgptError = 'Could not save the transcription setting. Try again.';
+        } finally {
+            this._providerSaving = false;
+        }
+    }
+
+    async _dismissChatGPTPlanNotice() {
+        try {
+            await cheatingDaddy.storage.updateConfig('chatgptPlanNoticeDismissed', true);
+            this._chatgptPlanNoticeDismissed = true;
+            this._showChatGPTPlanNotice = false;
+        } catch {
+            this._chatgptError = 'Could not save this setting. Try again.';
+            this._showChatGPTPlanNotice = false;
+        }
     }
 
     async _saveOpenaiKey(val) {
@@ -1033,9 +1242,24 @@ export class MainView extends LitElement {
     // ── Start ──
 
     _handleStart() {
-        if (this.isInitializing || this.downloadProgress.active) return;
+        if (this.isInitializing || this.downloadProgress.active || this._providerSaving) return;
 
-        if (this._mode === 'byok') {
+        if (this._mode === 'byok' && this._normalResponseProvider === 'chatgpt') {
+            if (this._chatgptBusy || this._chatgptStatus.connecting || this._chatgptModelsLoading) return;
+            if (!this._chatgptStatus.connected || !this._chatgptStatus.planEnabled) {
+                this._chatgptError = 'Continue with ChatGPT and allow plan usage before starting.';
+                return;
+            }
+            if (!this._chatgptModels.some(model => model.id === this._chatgptModel)) {
+                this._chatgptError = 'Refresh models and choose an available ChatGPT model.';
+                return;
+            }
+            if (this._chatgptUseTranscription && !this._geminiKey.trim()) {
+                this._keyError = true;
+                this._chatgptError = 'Add a Gemini API key for voice transcription, or turn off Gemini voice transcription.';
+                return;
+            }
+        } else if (this._mode === 'byok') {
             if (!this._geminiKey.trim()) {
                 this._keyError = true;
                 this.requestUpdate();
@@ -1070,6 +1294,13 @@ export class MainView extends LitElement {
     _renderStartButton() {
         const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
         const isDownloading = this._mode === 'local' && this.downloadProgress.active;
+        const normalBusy =
+            this.isInitializing ||
+            isDownloading ||
+            this._providerSaving ||
+            (this._mode === 'byok' &&
+                this._normalResponseProvider === 'chatgpt' &&
+                (this._chatgptBusy || this._chatgptStatus.connecting || this._chatgptModelsLoading));
         const percentage = this.downloadProgress.percentage;
         const hasPercentage = Number.isFinite(percentage);
 
@@ -1117,11 +1348,7 @@ export class MainView extends LitElement {
         </svg>`;
 
         return html`
-            <button
-                class="start-button ${this.isInitializing || isDownloading ? 'disabled' : ''}"
-                ?disabled=${this.isInitializing || isDownloading}
-                @click=${() => this._handleStart()}
-            >
+            <button class="start-button ${normalBusy ? 'disabled' : ''}" ?disabled=${normalBusy} @click=${() => this._handleStart()}>
                 <canvas class="btn-aurora"></canvas>
                 <canvas class="btn-dither"></canvas>
                 ${
@@ -1197,30 +1424,29 @@ export class MainView extends LitElement {
                 </summary>
                 <div class="config-content">
                     <div class="form-group">
-                        <label class="form-label">Gemini API Key</label>
+                        <label class="form-label" for="gemini-key">Gemini API Key</label>
                         <input
+                            id="gemini-key"
                             type="password"
-                            placeholder="Required"
+                            placeholder=${this._normalResponseProvider === 'chatgpt' ? 'Optional for voice' : 'Required'}
                             .value=${this._geminiKey}
                             @input=${e => this._saveGeminiKey(e.target.value)}
                             class=${this._keyError ? 'error' : ''}
                         />
                         <div class="form-hint">
                             <span class="link" @click=${() => this.onExternalLink('https://aistudio.google.com/apikey')}>Get Gemini key</span>
+                            · Used for voice transcription and Test Review.
                         </div>
                     </div>
-
                     <div class="form-group">
-                        <label class="form-label">Gemini Live Model</label>
-                        <input type="text" .value=${this._geminiLiveModel} @input=${e => this._saveGeminiLiveModel(e.target.value)} />
+                        <label class="form-label" for="gemini-live-model">Gemini Live Model</label>
+                        <input
+                            id="gemini-live-model"
+                            type="text"
+                            .value=${this._geminiLiveModel}
+                            @input=${e => this._saveGeminiLiveModel(e.target.value)}
+                        />
                         <div class="form-hint">Use auto to choose an available Live model, or enter a model ID.</div>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Gemini Screenshot Model</label>
-                        <input type="text" .value=${this._geminiImageModel} @input=${e => this._saveGeminiImageModel(e.target.value)} />
-                        <div class="form-hint">
-                            Use auto to choose an available screenshot model, or enter a model ID. Used when a Groq key is not configured.
-                        </div>
                     </div>
                 </div>
             </details>
@@ -1229,53 +1455,182 @@ export class MainView extends LitElement {
                 <summary class="config-summary">
                     <span class="config-summary-text">
                         <span class="config-summary-title">AI responses</span>
-                        <span class="config-summary-description">Groq key and response model</span>
+                        <span class="config-summary-description">Gemini API model</span>
                     </span>
                     ${this._renderConfigChevron()}
                 </summary>
                 <div class="config-content">
                     <div class="form-group">
-                        <label class="form-label">Groq API Key</label>
-                        <input type="password" placeholder="Optional" .value=${this._groqKey} @input=${e => this._saveGroqKey(e.target.value)} />
-                        <div class="form-hint">
-                            <span class="link" @click=${() => this.onExternalLink('https://console.groq.com/keys')}>Get Groq key</span>
-                        </div>
-                    </div>
-
-                    <div class="form-group">
-                        <label class="form-label">Groq Model</label>
-                        <input type="text" .value=${this._groqModel} @input=${e => this._saveGroqModel(e.target.value)} />
-                    </div>
-
-                    <div class="form-group">
-                        <label class="form-label">Groq Image Model</label>
-                        <input type="text" .value=${this._groqImageModel} @input=${e => this._saveGroqImageModel(e.target.value)} />
-                    </div>
-
-                    <label class="config-checkbox">
+                        <label class="form-label" for="gemini-image-model">Gemini Screenshot Model</label>
                         <input
-                            type="checkbox"
-                            .checked=${this._disableGroqThinking}
-                            @change=${e => this._saveDisableGroqThinking(e.target.checked)}
+                            id="gemini-image-model"
+                            type="text"
+                            .value=${this._geminiImageModel}
+                            @input=${e => this._saveGeminiImageModel(e.target.value)}
                         />
-                        <span class="config-checkbox-text">
-                            <span class="config-summary-title">Disable thinking</span>
-                            <span class="config-summary-description">Faster responses with less internal reasoning</span>
-                        </span>
-                    </label>
-
-                    <div class="config-note">
-                        If the Groq API key is empty, Gemini Live is used for answers instead. Its answer quality may be lower.
+                        <div class="form-hint">Use auto to choose an available screenshot model, or enter a model ID.</div>
                     </div>
                 </div>
             </details>
 
-            ${this._renderStartButton()} ${this._renderDivider()}
-
-            <!-- Cloud promo intentionally removed from the active UI. -->
-
+            ${this._renderChatGPTAccount()}
+            <div class="form-group">
+                <label class="form-label" for="normal-response-provider">AI for Start Session</label>
+                <select
+                    id="normal-response-provider"
+                    .value=${this._normalResponseProvider}
+                    ?disabled=${this.isInitializing || this._providerSaving}
+                    @change=${event => this._saveNormalResponseProvider(event.target.value)}
+                >
+                    <option value="gemini">Gemini API</option>
+                    <option value="chatgpt">ChatGPT account</option>
+                </select>
+                <div class="form-hint">
+                    ${
+                        this._normalResponseProvider === 'chatgpt'
+                            ? 'Screenshots and text work directly with ChatGPT. Enable Gemini voice transcription to also use speech.'
+                            : 'Gemini answers screenshots and transcribes speech.'
+                    }
+                    Test Review keeps its existing provider settings.
+                </div>
+            </div>
+            ${this._chatgptError ? html`<div class="form-hint" role="alert">${this._chatgptError}</div>` : ''} ${this._renderStartButton()}
+            ${this._renderDivider()}
             <div class="mode-links">
                 <button class="mode-link" @click=${() => this._saveMode('local')}>Use local AI</button>
+            </div>
+        `;
+    }
+
+    _renderChatGPTAccount() {
+        const status = this._chatgptStatus;
+        const busy = this._chatgptBusy || status.connecting;
+        const selected = this._chatgptModels.find(model => model.id === this._chatgptModel);
+        return html`
+            <details class="config-section" ?open=${this._normalResponseProvider === 'chatgpt'}>
+                <summary class="config-summary">
+                    <span class="config-summary-text">
+                        <span class="config-summary-title">ChatGPT account</span>
+                        <span class="config-summary-description">
+                            ${status.connecting ? 'Waiting for sign-in…' : status.connected ? status.email || 'Connected' : 'Sign in with your ChatGPT plan'}
+                        </span>
+                    </span>
+                    ${this._renderConfigChevron()}
+                </summary>
+                <div class="config-content">
+                    ${
+                        !status.connected || !status.planEnabled
+                            ? html`
+                                  <button class="chatgpt-sign-in" ?disabled=${busy || this.isInitializing} @click=${() => this._signInChatGPT()}>
+                                      ${busy ? 'Waiting for sign-in…' : 'Continue with ChatGPT'}
+                                  </button>
+                                  <div class="form-hint">
+                                      Sign in in your browser; choose Continue with Google there to use Gmail. Eligible requests use your ChatGPT plan
+                                      or credits. An eligible Plus or Pro plan is required.
+                                  </div>
+                                  ${status.connected ? html`<div class="config-note">Connected. Continue with ChatGPT to allow plan usage.</div>` : ''}
+                              `
+                            : html`
+                                  <div class="form-hint">Using ChatGPT plan · ${status.email || 'Connected account'}</div>
+                                  <div class="form-group">
+                                      <label class="form-label" for="chatgpt-model">ChatGPT model</label>
+                                      <select
+                                          id="chatgpt-model"
+                                          .value=${this._chatgptModel}
+                                          ?disabled=${this._chatgptModelsLoading || this._providerSaving || this.isInitializing || !this._chatgptModels.length}
+                                          @change=${event => this._saveChatGPTModel(event.target.value)}
+                                      >
+                                          ${!this._chatgptModels.length ? html`<option value="">${this._chatgptModelsLoading ? 'Loading models…' : 'Refresh to load models'}</option>` : ''}
+                                          ${this._chatgptModels.map(model => html`<option value=${model.id}>${model.name}</option>`)}
+                                      </select>
+                                      <div class="form-hint">
+                                          Models available to your account are shown. GPT-5.6 Instant is preferred when available; otherwise a listed
+                                          fast model is selected.
+                                      </div>
+                                  </div>
+                                  ${
+                                      selected?.supportsPro
+                                          ? html`
+                                                <div class="form-group">
+                                                    <label class="form-label" for="chatgpt-reasoning-mode">Response mode</label>
+                                                    <select
+                                                        id="chatgpt-reasoning-mode"
+                                                        .value=${this._chatgptReasoningMode}
+                                                        ?disabled=${this._providerSaving || this.isInitializing || this._chatgptModelsLoading}
+                                                        @change=${event => this._saveChatGPTReasoningMode(event.target.value)}
+                                                    >
+                                                        <option value="standard">Standard — faster</option>
+                                                        <option value="pro">Pro — deeper reasoning, slower</option>
+                                                    </select>
+                                                </div>
+                                            `
+                                          : ''
+                                  }
+                                  <div class="form-hint">
+                                      Replies stream as they arrive. Speed depends on the model, connection, and current usage limits.
+                                  </div>
+                              `
+                    }
+                    <label class="config-checkbox">
+                        <input
+                            type="checkbox"
+                            .checked=${this._chatgptUseTranscription}
+                            ?disabled=${this._providerSaving || this.isInitializing}
+                            @change=${event => this._saveChatGPTUseTranscription(event.target.checked)}
+                        />
+                        <span class="config-checkbox-text">
+                            <span class="config-summary-title">Use Gemini for voice transcription</span>
+                            <span class="config-summary-description">Requires a Gemini API key above and uses Gemini quota for speech.</span>
+                        </span>
+                    </label>
+                    <div class="account-actions">
+                        ${
+                            status.connected && status.planEnabled
+                                ? html`
+                                      <button
+                                          class="mode-link"
+                                          ?disabled=${this._chatgptModelsLoading || busy || this._providerSaving}
+                                          @click=${() => this._loadChatGPTModels(true)}
+                                      >
+                                          ${this._chatgptModelsLoading ? 'Loading…' : 'Refresh models'}
+                                      </button>
+                                  `
+                                : ''
+                        }
+                        <button class="mode-link" @click=${() => this.onExternalLink('https://chatgpt.com/settings/usage')}>Manage usage</button>
+                        ${
+                            status.connected
+                                ? html`<button class="mode-link" ?disabled=${busy || this.isInitializing} @click=${() => this._signInChatGPT(true)}>
+                                      Use another account
+                                  </button>`
+                                : ''
+                        }
+                        ${
+                            status.connected
+                                ? html`<button class="mode-link" ?disabled=${busy || this.isInitializing} @click=${() => this._signOutChatGPT()}>
+                                      Sign out
+                                  </button>`
+                                : ''
+                        }
+                    </div>
+                </div>
+            </details>
+        `;
+    }
+
+    _renderChatGPTPlanNotice() {
+        return html`
+            <div class="help-dialog-backdrop">
+                <section class="help-dialog" role="dialog" aria-modal="true" aria-labelledby="chatgpt-plan-title">
+                    <div class="help-dialog-header"><div class="help-dialog-title" id="chatgpt-plan-title">You’re using your ChatGPT plan</div></div>
+                    <div class="help-content">
+                        <div class="help-section-text">
+                            Eligible AI requests in Honest Father use your ChatGPT plan. Manage usage in your ChatGPT settings.
+                        </div>
+                        <button class="mode-link" @click=${() => this.onExternalLink('https://chatgpt.com/settings/usage')}>Manage usage</button>
+                        <button class="help-cloud-btn" autofocus @click=${() => this._dismissChatGPTPlanNotice()}>Got it</button>
+                    </div>
+                </section>
             </div>
         `;
     }
@@ -1348,7 +1703,7 @@ export class MainView extends LitElement {
             <!-- Cloud promo intentionally removed from the active UI. -->
 
             <div class="mode-links">
-                <button class="mode-link" @click=${() => this._saveMode('byok')}>Use own API keys</button>
+                <button class="mode-link" @click=${() => this._saveMode('byok')}>Use Gemini or ChatGPT</button>
             </div>
         `;
     }
@@ -1378,13 +1733,16 @@ export class MainView extends LitElement {
                           `
                         : html` <div class="page-title">${html`Honest Father <span class="mode-suffix">ANAYSSA</span>`}</div> `
                 }
-                <div class="page-subtitle">${this._mode === 'byok' ? 'Bring your own API keys' : 'Run models locally on your machine'}</div>
+                <div class="page-subtitle">
+                    ${this._mode === 'byok' ? 'Use Gemini API or your ChatGPT account' : 'Run models locally on your machine'}
+                </div>
 
                 ${this.statusText ? html`<div class="form-hint" role="status">${this.statusText}</div>` : ''}
                 <!-- Cloud mode render branch intentionally disabled. -->
                 ${this._mode === 'byok' ? this._renderByokMode() : ''} ${this._mode === 'local' ? this._renderLocalMode() : ''}
             </div>
             ${this._mode === 'local' && this._showLocalHelp ? this._renderLocalHelp(closeIcon) : ''}
+            ${this._showChatGPTPlanNotice ? this._renderChatGPTPlanNotice() : ''}
         `;
     }
 
@@ -1447,7 +1805,7 @@ export class MainView extends LitElement {
                                 this._saveMode('byok');
                             }}
                         >
-                            Switch to BYOK
+                            Use Gemini or ChatGPT
                         </button>
                     </div>
                 </section>

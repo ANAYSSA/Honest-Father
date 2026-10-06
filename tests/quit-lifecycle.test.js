@@ -139,6 +139,7 @@ test('application app.quit and hotkey lifecycle keep the deadline after will-qui
     const cleanup = [];
     let activations = 0;
     app.setName = () => {};
+    app.requestSingleInstanceLock = () => true;
     app.setAppUserModelId = () => {};
     app.whenReady = () => new Promise(() => {});
     app.exit = code => exits.push(code);
@@ -160,6 +161,7 @@ test('application app.quit and hotkey lifecycle keep the deadline after will-qui
             },
         },
         './utils/window': { disposeGlobalShortcuts: () => cleanup.push('shortcuts') },
+        './utils/chatgpt': { setupChatGPT() {} },
         './utils/gemini': {
             closeActiveSession: () => cleanup.push('session'),
             stopMacOSAudioCapture: () => cleanup.push('audio'),

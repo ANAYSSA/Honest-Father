@@ -21,6 +21,16 @@ Requires macOS 13 or later, or 64-bit Windows 10/11.
 
 Published macOS builds use the same project signing certificate across versions, so updates can retain their privacy authorization. They are not Developer ID signed or notarized, so macOS may require approval under **System Settings → Privacy & Security**. Windows builds are unsigned and may show SmartScreen. Each platform includes a `SHA256SUMS.txt` file for verifying downloads. Linux packaging is outside the scope of this fork's release workflow.
 
+## What changed in 0.11.0
+
+- Choose **Gemini API** or **ChatGPT account** before **Start Session**. Groq controls are removed from Home; the existing Test Review provider path is preserved.
+- **Continue with ChatGPT** opens official account authorization in the system browser. Choose Google there to use your Gmail account. Eligible Plus/Pro accounts can use their ChatGPT plan; no separate OpenAI API key is required. You can sign out or connect another account.
+- The model picker uses the account’s live catalog. GPT-5.6 Instant is preferred if it is actually listed; otherwise an available fast model is selected. Supported GPT-6 models expose a separate **Pro** mode, which is slower. Model access depends on the account.
+- ChatGPT starts with screenshots and text. Gemini voice transcription is optional and off by default, so a saved Gemini key does not delay ChatGPT startup. Responses stream immediately as text arrives, with a cached model catalog, bounded text context, and no re-upload of old screenshots.
+- Duplicate requests are blocked while a reply is in flight. Closing a session aborts the request; interrupted streams are never silently replayed. Temporary pre-stream service failures have one bounded retry. Response time depends on the model, network, and provider load; 4–5 seconds is not guaranteed.
+- ChatGPT tokens are encrypted using the operating system’s credential protection and remain in the main process. Sign-in verifies PKCE, state, nonce and ID-token signature; renewal is serialized. A single running instance prevents rotating-token and shortcut conflicts.
+- Test Review, its mark appearance and shortcuts, and the persistent macOS signing identity are unchanged.
+
 ## What changed in 0.10.8
 
 - Fixed Test Review rejecting an unchanged question layout after a successful AI reply, which left the answer marker hidden. Frame matching keeps the checks that hide changed or off-screen questions.
@@ -82,14 +92,14 @@ Published macOS builds use the same project signing certificate across versions,
 
 ## Setup and practice
 
-1. Create a Gemini API key in [Google AI Studio](https://aistudio.google.com/apikey).
-2. Enter the key under **Transcription** in the app. The screenshot model is used directly for screen-only practice; the Live model is only needed when starting an audio session.
-3. Optionally enter a [Groq API key](https://console.groq.com/keys) for answer generation. Without it, Gemini answers questions and analyzes screenshots.
-4. Select a practice profile, language, and any useful context such as a resume, job description, or study notes.
-5. From Home, press **Command + Enter** on macOS or **Ctrl + Enter** on Windows. Allow screen sharing or Screen Recording access when prompted; the app starts a screen-only session and analyzes the first screenshot immediately.
-6. Press the same shortcut during the session to analyze the next screenshot. Use mock interview questions or study material, then review saved conversations in History.
+1. Choose **AI for Start Session → Gemini API** or **ChatGPT account** on Home.
+2. For Gemini, enter a key from [Google AI Studio](https://aistudio.google.com/apikey) under **Transcription**. Keep the Live and screenshot model settings on `auto`, or choose supported model IDs.
+3. For ChatGPT, open **ChatGPT account → Continue with ChatGPT** and finish sign-in in the official browser page. Choose **Continue with Google** there for Gmail. Allow use of your eligible ChatGPT plan, then choose an available model. Manage the app’s allowance in [ChatGPT Settings → Usage](https://chatgpt.com/settings/usage). This uses the [official open-source app sign-in flow](https://developers.openai.com/siwc/token-sharing-open-source).
+4. Select a practice profile, language, and useful context such as study notes or a job description.
+5. From Home, press **Command + Enter** on macOS or **Ctrl + Enter** on Windows. Allow Screen Recording when prompted; the app starts a screen-only session and analyzes the first screenshot immediately.
+6. Press the same shortcut for the next screenshot. **Start Session** opens the assistant without automatically submitting a screenshot. ChatGPT starts screen-only by default; enable **Use Gemini for voice transcription** and add a Gemini key if you also want spoken questions. Gemini normal sessions use the Live connection for speech.
 
-For spoken practice, **Start Session** starts audio capture and the Live connection. Leave the Live model on `auto`, or enter a supported model ID, and allow the relevant microphone/system audio permissions. Screen-only practice avoids the Live connection and audio capture entirely. Gemini availability is checked using the [Models API](https://ai.google.dev/api/models).
+ChatGPT account inference supports text and images; its current sign-in route does not support audio transcription. Pro mode trades speed for deeper reasoning. Streamed answers, cached model discovery, and bounded request context reduce waiting and repeated traffic, but network availability and a fixed response time cannot be guaranteed. Account tokens are encrypted locally with the OS credential store, never returned to the renderer, and revoked on sign-out when the network is available. A failed remote revocation is reported so the app can also be disconnected in ChatGPT Settings.
 
 For multiple-choice practice, choose **Start Test Review**. The app hides its text window, captures the first question, and marks the proposed correct control. Press **Command + Enter** / **Ctrl + Enter** for a new question. **Command + \\** / **Ctrl + \\** shows or hides the app window, including during Test Review. **Command + Shift + \\** / **Ctrl + Shift + \\** independently shows or hides the review marks or a stored notice. Errors remain hidden until you show the notice with that shortcut.
 
@@ -97,9 +107,9 @@ Under **Customize → Appearance**, choose **Review Marker Color** and **Review 
 
 Test Review only annotates; it does not select or submit answers. Local scroll tracking requires the complete question and its choices to remain visible and uses no API requests. If the question cannot be matched, the marks stay hidden; scroll back or capture the new question. Show the app window to end the session or change settings; the Quit application shortcut remains available on both platforms.
 
-Test Review needs Gemini or Groq with an image-capable model. It does not open a Live/audio connection, and the Local AI mode currently does not support these visual annotations. Cached questions are kept only in memory until the review session ends; they are not added to History.
+Test Review needs Gemini with an image-capable model; existing installations retain their previously configured review provider. Selecting ChatGPT changes only the normal session. It does not open a Live/audio connection, and the Local AI mode currently does not support these visual annotations. Cached questions are kept only in memory until the review session ends; they are not added to History.
 
-Google and Groq enforce quotas per API project, model, and account tier. The app cannot increase these quotas. Check the provider's dashboard if a quota error appears; changing a model only helps when that model is available and has its own remaining allowance. The app no longer assumes a fixed daily screenshot quota.
+Google and OpenAI enforce usage limits per project, model, account, or app allowance. Existing Groq-based review sessions retain Groq limits. The app cannot increase these quotas. Check the provider's dashboard if a quota error appears; changing a model only helps when that model is available and has its own remaining allowance. The app no longer assumes a fixed daily screenshot quota.
 
 **Local AI** uses `llama.cpp` and `whisper.cpp` on your computer. The runtime and selected models are downloaded on first use; after downloading, sessions can run without external AI API calls. This fork currently downloads those optional runtimes from the upstream v0.7.0 release, with checksum verification.
 

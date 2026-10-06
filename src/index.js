@@ -16,6 +16,11 @@ const { normalizeKeybinds } = require('./utils/keybinds');
 const { createShutdownHandler, createQuitController } = require('./utils/shutdown');
 const storage = require('./storage');
 const { reviewAppearanceFromPreferences } = require('./utils/reviewAppearance');
+const { setupChatGPT } = require('./utils/chatgpt');
+
+// One process owns rotating OAuth tokens and the global shortcuts.
+const ownsInstance = app.requestSingleInstanceLock();
+if (!ownsInstance) app.exit(0);
 
 app.setName('Honest Father');
 if (process.platform === 'win32') app.setAppUserModelId('com.squirrel.HonestFather.HonestFather');
@@ -46,11 +51,24 @@ function createMainWindow() {
 }
 
 app.whenReady().then(async () => {
-    if (quitController.isQuitting()) return;
+    if (!ownsInstance || quitController.isQuitting()) return;
     // Initialize storage (checks version, resets if needed)
     storage.initializeStorage();
 
     createMainWindow();
+    setupChatGPT({
+        window: () => mainWindow,
+        disconnected: () => {
+            if (require('./utils/gemini').isChatGPTSession()) {
+                closeActiveSession(geminiSessionRef);
+                stopMacOSAudioCapture();
+                sendToRenderer('provider-session-ended', {
+                    reason: 'ChatGPT account changed. Start a new session.',
+                    code: 'chatgpt_account_changed',
+                });
+            }
+        },
+    });
     setupGeminiIpcHandlers(geminiSessionRef);
     setupStorageIpcHandlers();
     setupGeneralIpcHandlers();
@@ -67,7 +85,7 @@ app.on('before-quit', quitController.beginQuit);
 app.on('will-quit', () => globalShortcut.unregisterAll());
 
 app.on('activate', () => {
-    if (quitController.isQuitting()) return;
+    if (!ownsInstance || quitController.isQuitting()) return;
     if (!mainWindow || mainWindow.isDestroyed()) {
         createMainWindow();
     } else if (!getReviewOverlay()?.isActive()) {

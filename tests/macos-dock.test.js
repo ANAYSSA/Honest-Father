@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const { createShutdownHandler, createQuitController } = require('../src/utils/shutdown');
 
-function loadStartup(platform) {
+function loadStartup(platform, ownsInstance = true) {
     const calls = [];
     const handlers = new Map();
     const app = new EventEmitter();
@@ -19,6 +19,7 @@ function loadStartup(platform) {
     let windowCount = 0;
     let createdWindow;
     app.setName = () => {};
+    app.requestSingleInstanceLock = () => ownsInstance;
     app.setAppUserModelId = () => {};
     app.whenReady = () => readyPromise;
     app.setActivationPolicy = policy => {
@@ -64,6 +65,7 @@ function loadStartup(platform) {
             getReviewOverlay: () => null,
             disposeGlobalShortcuts: () => calls.push('dispose-shortcuts'),
         },
+        './utils/chatgpt': { setupChatGPT() {} },
         './utils/gemini': {
             setupGeminiIpcHandlers() {},
             setMainWindow() {},
@@ -168,4 +170,13 @@ test('packaged macOS app starts as an interactive agent without a startup Dock i
     const info = configuration.exports.packagerConfig.extendInfo;
     assert.equal(info.LSUIElement, true);
     assert.equal(info.LSBackgroundOnly, undefined, 'The app must still be able to present its interactive window');
+});
+
+test('a second process cannot create windows or open the shared OAuth token store', async () => {
+    const startup = loadStartup('darwin', false);
+    startup.ready();
+    await Promise.resolve();
+    startup.app.emit('activate');
+    assert.deepEqual(startup.calls, []);
+    assert.equal(startup.handlers.size, 0);
 });

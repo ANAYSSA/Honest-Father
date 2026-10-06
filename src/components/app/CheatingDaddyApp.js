@@ -611,13 +611,17 @@ export class CheatingDaddyApp extends LitElement {
             const prefs = await cheatingDaddy.storage.getPreferences();
             if (token !== this._sessionStartGeneration) return;
             const providerMode = prefs.providerMode === 'local' ? 'local' : 'byok';
-            const success =
-                providerMode === 'local'
-                    ? await cheatingDaddy.initializeLocal(this.selectedProfile)
-                    : await cheatingDaddy.initializeGemini(this.selectedProfile, this.selectedLanguage);
+            const config = await cheatingDaddy.storage.getConfig();
+            const screenOnly = providerMode !== 'local' && config.normalResponseProvider === 'chatgpt' && config.chatgptUseTranscription !== true;
+            if (token !== this._sessionStartGeneration) return;
+            const success = screenOnly
+                ? await cheatingDaddy.initializeScreenSession(this.selectedProfile, false)
+                : providerMode === 'local'
+                  ? await cheatingDaddy.initializeLocal(this.selectedProfile)
+                  : await cheatingDaddy.initializeGemini(this.selectedProfile, this.selectedLanguage);
             if (!success || token !== this._sessionStartGeneration) return;
 
-            const capturing = await cheatingDaddy.startCapture(this.selectedScreenshotInterval, this.selectedImageQuality);
+            const capturing = await cheatingDaddy.startCapture(this.selectedScreenshotInterval, this.selectedImageQuality, screenOnly);
             if (!capturing || token !== this._sessionStartGeneration) {
                 cheatingDaddy.stopCapture();
                 if (window.require) await window.require('electron').ipcRenderer.invoke('close-session', { silent: true });

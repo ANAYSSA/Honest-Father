@@ -6,6 +6,16 @@
 
 Honest Father is an open-source assistant for mock interviews, exam preparation, and learning, forked from Cheating Daddy.
 
+## New in 0.11.0
+
+- Choose **Gemini API** or **ChatGPT account** before **Start Session**. Groq controls are removed from Home; the existing Test Review provider path is preserved.
+- **Continue with ChatGPT** opens official account authorization in the system browser. Choose Google there to use your Gmail account. Eligible Plus/Pro accounts can use their ChatGPT plan; no separate OpenAI API key is required. You can sign out or connect another account.
+- The model picker uses the account’s live catalog. GPT-5.6 Instant is preferred if it is actually listed; otherwise an available fast model is selected. Supported GPT-6 models expose a separate **Pro** mode, which is slower. Model access depends on the account.
+- ChatGPT starts with screenshots and text. Gemini voice transcription is optional and off by default, so a saved Gemini key does not delay ChatGPT startup. Responses stream immediately as text arrives, with a cached model catalog, bounded text context, and no re-upload of old screenshots.
+- Duplicate requests are blocked while a reply is in flight. Closing a session aborts the request; interrupted streams are never silently replayed. Temporary pre-stream service failures have one bounded retry. Response time depends on the model, network, and provider load; 4–5 seconds is not guaranteed.
+- ChatGPT tokens are encrypted using the operating system’s credential protection and remain in the main process. Sign-in verifies PKCE, state, nonce and ID-token signature; renewal is serialized. A single running instance prevents rotating-token and shortcut conflicts.
+- Test Review, its mark appearance and shortcuts, and the persistent macOS signing identity are unchanged.
+
 ## New in 0.10.8
 
 - Fixed Test Review rejecting an unchanged question layout after a successful AI reply, which left the answer marker hidden. Frame matching keeps the checks that hide changed or off-screen questions.
