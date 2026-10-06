@@ -220,10 +220,11 @@ for (const permissionStatus of ['denied', 'restricted']) {
     });
 }
 
-test('macOS AbortError with granted permission explains native capture failure and re-adding the installed app', async () => {
+test('macOS AbortError with granted permission prioritizes a full restart before changing the installed app entry', async () => {
     const harness = failingScreenCapture({ diagnostics: { permissionStatus: 'granted', failure: null } });
     assert.equal(await harness.api.startCapture(5, 'medium', true, true), false);
     assert.match(harness.app.status, /could not start screen capture even though Screen Recording permission is enabled/);
+    assert.match(harness.app.status, /Quit Honest Father completely and reopen it\. If this continues/);
     assert.match(harness.app.status, /remove Honest Father, add the installed app again, then restart/);
     assert.doesNotMatch(harness.app.status, /Allow Honest Father|Invalid capture constraints/);
     assert.equal(harness.acquisitions(), 1);
@@ -235,13 +236,92 @@ test('fresh native source diagnostics are normalized and included without misrep
         message: 'The native screen stream could not start',
         diagnostics: {
             permissionStatus: 'granted',
-            failure: { code: 'source_enumeration', error: 'No available\n screen\u0000 source', stage: 'enumeration', at: Date.now() },
+            failure: { code: 'source_enumeration_failed', error: 'No available\n screen\u0000 source', stage: 'sources', at: Date.now() },
         },
     });
     assert.equal(await harness.api.startCapture(5, 'medium', true), false);
-    assert.match(harness.app.status, /Capture source: No available  screen  source/);
+    assert.match(harness.app.status, /Capture failure \(code: source_enumeration_failed, stage: sources\): No available screen source/);
     assert.match(harness.app.status, /permission is enabled/);
     assert.doesNotMatch(harness.app.status, /\u0000|\n/);
+    assert.equal(harness.acquisitions(), 1);
+});
+
+for (const permissionStatus of ['denied', 'restricted']) {
+    test(`macOS source enumeration failure with ${permissionStatus} access distinguishes the running copy from an old enabled entry`, async () => {
+        const harness = failingScreenCapture({
+            diagnostics: {
+                permissionStatus,
+                failure: { code: 'source_enumeration_failed', error: 'Failed to get sources.', stage: 'sources', at: Date.now() },
+            },
+        });
+        assert.equal(await harness.api.startCapture(5, 'medium', true, true), false);
+        assert.match(harness.app.status, /macOS rejected screen capture for the running copy of Honest Father/);
+        assert.match(harness.app.status, /code: source_enumeration_failed, stage: sources\): Failed to get sources/);
+        assert.match(harness.app.status, /enabled Honest Father entry.*may refer to an older copy/);
+        assert.match(
+            harness.app.status,
+            /remove the old Honest Father entry, add the installed app again, then quit Honest Father completely and reopen it/
+        );
+        assert.doesNotMatch(harness.app.status, /Allow Honest Father|permission is enabled|Invalid capture constraints/);
+        assert.equal(harness.acquisitions(), 1);
+        assert.equal(
+            harness.calls.some(call => call.channel === 'review:begin' || call.channel === 'start-macos-audio'),
+            false
+        );
+    });
+}
+
+const requestFailureFixtures = [
+    { code: 'invalid_request', stage: 'request', error: 'The request came from another frame' },
+    { code: 'capture_cancelled', stage: 'request', error: 'The capture frame changed during source enumeration' },
+    { code: 'source_selection_failed', stage: 'source-selected', error: 'The selected monitor disappeared' },
+    { code: 'capture_callback_failed', stage: 'callback', error: 'The native callback frame ended' },
+];
+for (const permissionStatus of ['denied', 'restricted', 'granted', 'unknown', 'not-determined']) {
+    for (const fixture of requestFailureFixtures) {
+        test(`fresh ${fixture.code} with ${permissionStatus} permission preserves its own cause without permission repair advice`, async () => {
+            const harness = failingScreenCapture({ diagnostics: { permissionStatus, failure: { ...fixture, at: Date.now() } } });
+            assert.equal(await harness.api.startCapture(5, 'medium', true, true), false);
+            assert.ok(harness.app.status.includes(`code: ${fixture.code}, stage: ${fixture.stage}`));
+            assert.ok(harness.app.status.includes(fixture.error));
+            assert.doesNotMatch(
+                harness.app.status,
+                /Allow Honest Father|Screen & System Audio Recording|older copy|permission is enabled|Invalid capture constraints/
+            );
+            assert.equal(harness.acquisitions(), 1);
+            assert.equal(
+                harness.calls.some(call => call.channel === 'review:begin' || call.channel === 'start-macos-audio'),
+                false
+            );
+        });
+    }
+}
+
+test('a denied screen with no available sources retains the source code and stage alongside permission help', async () => {
+    const harness = failingScreenCapture({
+        diagnostics: {
+            permissionStatus: 'denied',
+            failure: { code: 'no_screen_sources', error: 'No screen capture sources are available.', stage: 'sources', at: Date.now() },
+        },
+    });
+    assert.equal(await harness.api.startCapture(5, 'medium', true), false);
+    assert.match(harness.app.status, /code: no_screen_sources, stage: sources\): No screen capture sources are available/);
+    assert.match(harness.app.status, /Allow Honest Father/);
+    assert.equal(harness.acquisitions(), 1);
+});
+
+test('unknown source diagnostic codes cannot replace the current native failure', async () => {
+    const harness = failingScreenCapture({
+        name: 'NotReadableError',
+        message: 'Current native device failure',
+        diagnostics: {
+            permissionStatus: 'granted',
+            failure: { code: 'unrecognized_failure', error: 'Irrelevant unknown source error', stage: 'sources', at: Date.now() },
+        },
+    });
+    assert.equal(await harness.api.startCapture(5, 'medium', true), false);
+    assert.match(harness.app.status, /Current native device failure/);
+    assert.doesNotMatch(harness.app.status, /unrecognized_failure|Irrelevant unknown source error|Allow Honest Father/);
     assert.equal(harness.acquisitions(), 1);
 });
 
@@ -253,9 +333,9 @@ for (const age of ['expired', 'future']) {
             diagnostics: {
                 permissionStatus: 'granted',
                 failure: {
-                    code: 'source_enumeration',
+                    code: 'source_enumeration_failed',
                     error: 'OLD SOURCE ERROR',
-                    stage: 'enumeration',
+                    stage: 'sources',
                     at: Date.now() + (age === 'expired' ? -11000 : 60000),
                 },
             },
@@ -274,7 +354,7 @@ for (const name of ['TypeError', 'InvalidStateError']) {
             message: 'Current request must run from an active browser context',
             diagnostics: {
                 permissionStatus: 'denied',
-                failure: { code: 'source_enumeration', error: 'Irrelevant source diagnostic', stage: 'enumeration', at: Date.now() },
+                failure: { code: 'source_enumeration_failed', error: 'Irrelevant source diagnostic', stage: 'sources', at: Date.now() },
             },
         });
         assert.equal(await harness.api.startCapture(5, 'medium', true), false);

@@ -19,9 +19,15 @@ For macOS, open the DMG and drag **Honest Father** to Applications. On Windows, 
 
 Requires macOS 13 or later, or 64-bit Windows 10/11.
 
-macOS builds have an ad hoc signature verified after packaging. They are not Developer ID signed or notarized, so macOS may require approval under **System Settings → Privacy & Security**. Windows builds are unsigned and may show SmartScreen. Each platform includes a `SHA256SUMS.txt` file for verifying downloads. Linux packaging is outside the scope of this fork's release workflow.
+Published macOS builds use the same project signing certificate across versions, so updates can retain their privacy authorization. They are not Developer ID signed or notarized, so macOS may require approval under **System Settings → Privacy & Security**. Windows builds are unsigned and may show SmartScreen. Each platform includes a `SHA256SUMS.txt` file for verifying downloads. Linux packaging is outside the scope of this fork's release workflow.
 
-## What changed in 0.10.3
+## What changed in 0.10.4
+
+- Published macOS apps now use a persistent, certificate-bound signing identity. Updates signed with this certificate can retain Screen Recording authorization instead of becoming a new ad-hoc identity on each build.
+- One-time migration: fully quit old copies, remove the old Honest Father entry from Screen & System Audio Recording, then add and authorize the newly installed 0.10.4 app. Future releases must keep the same signing certificate.
+- Capture diagnostics preserve the original source/request failure instead of hiding every failure behind permission advice.
+
+## Capture improvements in 0.10.3
 
 - Screen capture starts at the display’s native proportions. Optional low frame rates are applied after the stream opens; unsupported rate settings no longer prevent capture.
 - macOS capture failures retain the original screen-source error and check the running app’s permission status. A failed source is no longer mislabeled as invalid capture parameters or always treated as a disabled permission.
@@ -104,7 +110,7 @@ npm run make -- --platform=darwin --arch=arm64
 npm run make -- --platform=win32 --arch=x64
 ```
 
-Packages are written to `out/make`. The [build workflow](.github/workflows/build.yml) produces both variants and verifies startup. Manual workflow runs keep downloads as workflow artifacts; pushing a `v<version>` tag also publishes a GitHub Release with installers, portable archives, and checksums. Packaging dependency versions are pinned in `package-lock.json`.
+Packages are written to `out/make`. The [build workflow](.github/workflows/build.yml) tests both platforms and automatically publishes Windows assets on a version tag. Its ad-hoc Mac build is a CI test artifact and is never uploaded to a public release. Mac releases are built on the release signer's Mac with `HONEST_FATHER_RELEASE_SIGNING=1 npm run make -- --platform=darwin --arch=arm64`, then checked with `node scripts/verify-mac-signing-stability.js`. Run `node scripts/collect-artifacts.js darwin arm64` and `node scripts/publish-macos.js v<version> <successful-build-run-id>` to upload the signed Mac files. The private signing key stays in the local macOS keychain; only its public certificate is checked into the repository. Packaging dependency versions are pinned in `package-lock.json`.
 
 ## Capture and storage
 

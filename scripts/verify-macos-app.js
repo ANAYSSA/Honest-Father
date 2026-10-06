@@ -2,8 +2,9 @@ const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const { releaseRequirement } = require('./mac-signing');
 
-function verifyMacApp(appPath) {
+function verifyMacApp(appPath, { requireStableSigning = process.env.HONEST_FATHER_RELEASE_SIGNING === '1' } = {}) {
     assert.equal(process.platform, 'darwin', 'macOS signature verification requires macOS');
     const bundle = path.resolve(appPath);
     const plistPath = path.join(bundle, 'Contents', 'Info.plist');
@@ -19,6 +20,15 @@ function verifyMacApp(appPath) {
     }
     execFileSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--verbose=2', bundle], { stdio: 'inherit' });
     execFileSync('/usr/bin/codesign', ['--verify', '--strict', '-R=identifier "com.anayssa.honestfather"', bundle], { stdio: 'inherit' });
+    if (requireStableSigning) {
+        execFileSync('/usr/bin/codesign', ['--verify', '--strict', `-R=${releaseRequirement}`, bundle], { stdio: 'inherit' });
+        const designated = execFileSync('/usr/bin/codesign', ['-dr', '-', bundle], { encoding: 'utf8' });
+        assert.ok(
+            designated.toLowerCase().includes(releaseRequirement.toLowerCase()),
+            'Published Mac app must use the stable certificate and app identifier requirement'
+        );
+        assert.doesNotMatch(designated, /\bcdhash\b/, 'Published Mac permission identity must not change with each build');
+    }
     // Resources are sealed by the bundle, but the standalone Swift executable also
     // needs its own valid Mach-O signature before Apple Silicon will execute it.
     const audioHelper = path.join(bundle, 'Contents', 'Resources', 'SystemAudioDump');

@@ -128,3 +128,13 @@ When implementing transcription features borrow the following rules from
 There are placeholder files for future LLM integration (e.g. Qwen models via
 `llama.cpp`). Continue development after the core transcription pipeline is
 stable and ensure tests cover this new functionality.
+
+## macOS release signing
+
+Never publish the ad-hoc macOS build from GitHub Actions as a release asset.
+It is only a CI test artifact: its privacy identity changes across versions.
+The public project certificate is `build/honest-father-signing.pem`; its private
+key exists only in the local release signer's macOS keychain. Never export that
+key to the repository, installers, tool output, or GitHub secrets.
+
+Build public Mac releases locally with `HONEST_FATHER_RELEASE_SIGNING=1 npm run make -- --platform=darwin --arch=arm64`, then run `node scripts/verify-mac-signing-stability.js`. Both deep signature validation and the certificate-bound designated requirement must pass. Publish those DMG/ZIP files and their checksums after both CI platform jobs succeed. CI automatically publishes Windows only. A signing identity change requires a new one-time macOS permission grant and must be documented.

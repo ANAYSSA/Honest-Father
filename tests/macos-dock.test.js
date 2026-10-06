@@ -154,6 +154,7 @@ test('packaged macOS app starts as an interactive agent without a startup Dock i
         '@electron/fuses': { FuseV1Options: {}, FuseVersion: {} },
         './scripts/build-audio-helper': {},
         './scripts/verify-macos-app': {},
+        './scripts/mac-signing': require('../scripts/mac-signing'),
     };
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../forge.config.js'), 'utf8'), {
         require(name) {

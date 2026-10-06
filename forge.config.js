@@ -3,6 +3,7 @@ const { FusesPlugin } = require('@electron-forge/plugin-fuses');
 const { FuseV1Options, FuseVersion } = require('@electron/fuses');
 const { buildAudioHelper } = require('./scripts/build-audio-helper');
 const { verifyMacApp } = require('./scripts/verify-macos-app');
+const { getMacSigningOptions } = require('./scripts/mac-signing');
 
 module.exports = {
     packagerConfig: {
@@ -23,16 +24,9 @@ module.exports = {
             LSMinimumSystemVersion: '13.0',
         },
         ignore: [/^\/native(?:\/|$)/, /^\/scripts(?:\/|$)/, /^\/tests?(?:\/|$)/, /^\/work(?:\/|$)/, /^\/\.github(?:\/|$)/],
-        // Re-sign the final bundle after plist/ASAR/fuse changes. '-' needs no certificate;
-        // Developer ID signing and notarization remain separate distribution steps.
-        osxSign: {
-            identity: '-',
-            identityValidation: false,
-            preAutoEntitlements: false,
-            preEmbedProvisioningProfile: false,
-            optionsForFile: () => ({ hardenedRuntime: false, timestamp: 'none' }),
-            continueOnError: false,
-        },
+        // CI validates ad-hoc builds. Published Mac assets use the persistent
+        // release certificate so their privacy identity survives updates.
+        osxSign: getMacSigningOptions(),
     },
     rebuildConfig: {},
     hooks: {

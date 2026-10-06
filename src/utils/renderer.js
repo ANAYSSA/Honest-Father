@@ -222,24 +222,46 @@ function explainMacScreenCaptureFailure(error, diagnostics) {
     const permissionStatus = diagnostics?.permissionStatus;
     const failure = diagnostics?.failure;
     const failureAge = typeof failure?.at === 'number' ? Date.now() - failure.at : Infinity;
+    const requestFailureCodes = ['invalid_request', 'capture_cancelled', 'source_selection_failed', 'capture_callback_failed'];
+    const knownFailureCodes = ['source_enumeration_failed', 'no_screen_sources', ...requestFailureCodes];
     const sourceError =
-        failureAge >= 0 && failureAge <= 10000 && typeof failure?.error === 'string'
+        failureAge >= 0 && failureAge <= 10000 && knownFailureCodes.includes(failure?.code) && typeof failure?.error === 'string'
             ? failure.error
-                  .replace(/[\u0000-\u001f\u007f]/g, ' ')
+                  .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+                  .replace(/\s+/g, ' ')
                   .trim()
                   .slice(0, 512)
             : '';
+    const failureStage = ['request', 'sources', 'source-selected', 'callback'].includes(failure?.stage) ? failure.stage : 'unknown';
+    const sourceDetails = sourceError ? `Capture failure (code: ${failure.code}, stage: ${failureStage}): ${sourceError}. ` : '';
     const permissionHelp = 'Allow Honest Father in System Settings > Privacy & Security > Screen & System Audio Recording, then restart the app.';
 
-    if (['denied', 'restricted'].includes(permissionStatus)) return new Error(permissionHelp);
+    // A callback rejection also produces AbortError. Keep its actual request cause
+    // even if macOS reports that this process currently lacks screen access.
+    if (sourceError && requestFailureCodes.includes(failure.code)) {
+        return new Error(`${sourceDetails}Quit Honest Father completely and reopen it before starting a new session.`);
+    }
+    if (['denied', 'restricted'].includes(permissionStatus)) {
+        if (sourceError && failure.code === 'source_enumeration_failed') {
+            return new Error(
+                'macOS rejected screen capture for the running copy of Honest Father. ' +
+                    sourceDetails +
+                    'An enabled Honest Father entry in Settings may refer to an older copy. ' +
+                    'In System Settings > Privacy & Security > Screen & System Audio Recording, remove the old Honest Father entry, ' +
+                    'add the installed app again, then quit Honest Father completely and reopen it.'
+            );
+        }
+        return new Error(sourceDetails + permissionHelp);
+    }
     if (permissionStatus === 'granted' && (sourceError || error?.name === 'AbortError')) {
         return new Error(
             'macOS could not start screen capture even though Screen Recording permission is enabled. ' +
-                (sourceError ? `Capture source: ${sourceError}. ` : '') +
-                'In System Settings > Privacy & Security > Screen & System Audio Recording, remove Honest Father, add the installed app again, then restart it.'
+                sourceDetails +
+                'Quit Honest Father completely and reopen it. If this continues, in System Settings > Privacy & Security > Screen & System Audio Recording, ' +
+                'remove Honest Father, add the installed app again, then restart it.'
         );
     }
-    if (sourceError) return new Error(`macOS could not provide the screen stream. Capture source: ${sourceError}. Restart the app and try again.`);
+    if (sourceError) return new Error(`macOS could not provide the screen stream. ${sourceDetails}Restart the app and try again.`);
     if (permissionStatus !== 'granted' && ['NotAllowedError', 'PermissionDeniedError'].includes(error?.name)) return new Error(permissionHelp);
     if (invalidCapture) return new Error('macOS could not provide the screen stream. Restart Honest Father and try screen capture again.');
     return error;

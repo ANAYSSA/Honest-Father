@@ -6,7 +6,13 @@
 
 Honest Father is an open-source assistant for mock interviews, exam preparation, and learning, forked from Cheating Daddy.
 
-## New in 0.10.3
+## New in 0.10.4
+
+- Published macOS apps now use a persistent, certificate-bound signing identity. Updates signed with this certificate can retain Screen Recording authorization instead of becoming a new ad-hoc identity on each build.
+- One-time migration: fully quit old copies, remove the old Honest Father entry from Screen & System Audio Recording, then add and authorize the newly installed 0.10.4 app. Future releases must keep the same signing certificate.
+- Capture diagnostics preserve the original source/request failure instead of hiding every failure behind permission advice.
+
+## Capture improvements in 0.10.3
 
 - Screen capture starts at the display’s native proportions. Optional low frame rates are applied after the stream opens; unsupported rate settings no longer prevent capture.
 - macOS capture failures retain the original screen-source error and check the running app’s permission status. A failed source is no longer mislabeled as invalid capture parameters or always treated as a disabled permission.
@@ -39,7 +45,7 @@ Honest Father is an open-source assistant for mock interviews, exam preparation,
 
 Choose `macos-arm64` for Apple Silicon, or `windows-x64` for Windows. `*-SHA256SUMS.txt` files contain download checksums.
 
-macOS builds have a verified ad hoc signature, but are not Developer ID signed or notarized; approval in System Settings → Privacy & Security may still be required. Windows builds are unsigned and may display SmartScreen. Allow Screen Recording and Microphone permissions when using capture.
+Published macOS builds use a verified persistent project certificate, but are not Developer ID signed or notarized; approval in System Settings → Privacy & Security may still be required. Windows builds are unsigned and may display SmartScreen. Allow Screen Recording and Microphone permissions when using capture.
 
 Google quotas apply to the API project; Groq quotas depend on the account and model. The application cannot increase provider quotas. Local AI mode can work without external AI API calls after the required runtime and models are downloaded.
 

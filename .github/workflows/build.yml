@@ -65,8 +65,10 @@ jobs:
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
             - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
               with:
+                  # Mac CI builds are ad-hoc test artifacts. Only Mac assets
+                  # signed with the persistent local release key may be published.
+                  name: Honest-Father-win32-x64
                   path: release-assets
-                  merge-multiple: true
             - name: Create release and upload downloads
               env:
                   GH_TOKEN: ${{ github.token }}
