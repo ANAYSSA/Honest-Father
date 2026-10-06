@@ -151,38 +151,42 @@ test('tree descriptors reject duplicate/unsorted paths, symlink parents, externa
         assert.throws(() => validateTargetEntries(entries));
 });
 
-test('whole app verification detects changed bytes, file modes, links or extra files without following patch symlinks', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'honest-keyless-tree-'));
-    try {
-        fs.mkdirSync(path.join(root, 'Contents/MacOS'), { recursive: true, mode: 0o755 });
-        fs.mkdirSync(path.join(root, 'Contents/Resources'), { mode: 0o755 });
-        const executable = path.join(root, 'Contents/MacOS/Honest Father');
-        const link = path.join(root, 'Contents/Resources/current');
-        fs.writeFileSync(executable, 'signed executable bytes', { mode: 0o755 });
-        fs.symlinkSync('../MacOS/Honest Father', link);
-        const expected = { targetEntries: appTree(root) };
-        expected.targetTreeSHA256 = sha(JSON.stringify(expected.targetEntries));
-        assert.doesNotThrow(() => validateTargetEntries(expected.targetEntries));
-        assert.doesNotThrow(() => verifyAppTree(root, expected));
-        assert.equal(resolvePatchFile(root, 'Contents/MacOS/Honest Father'), executable);
-        assert.throws(() => resolvePatchFile(root, 'Contents/Resources/current'));
-        fs.appendFileSync(executable, 'tampered');
-        assert.throws(() => verifyAppTree(root, expected));
-        fs.writeFileSync(executable, 'signed executable bytes');
-        fs.chmodSync(executable, 0o644);
-        assert.throws(() => verifyAppTree(root, expected));
-        fs.chmodSync(executable, 0o755);
-        fs.unlinkSync(link);
-        fs.symlinkSync('../MacOS/another', link);
-        assert.throws(() => verifyAppTree(root, expected));
-        fs.unlinkSync(link);
-        fs.symlinkSync('../MacOS/Honest Father', link);
-        fs.writeFileSync(path.join(root, 'Contents/extra'), 'extra');
-        assert.throws(() => verifyAppTree(root, expected));
-    } finally {
-        fs.rmSync(root, { recursive: true, force: true });
+test(
+    'whole app verification detects changed bytes, file modes, links or extra files without following patch symlinks',
+    { skip: process.platform === 'win32' },
+    () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'honest-keyless-tree-'));
+        try {
+            fs.mkdirSync(path.join(root, 'Contents/MacOS'), { recursive: true, mode: 0o755 });
+            fs.mkdirSync(path.join(root, 'Contents/Resources'), { mode: 0o755 });
+            const executable = path.join(root, 'Contents/MacOS/Honest Father');
+            const link = path.join(root, 'Contents/Resources/current');
+            fs.writeFileSync(executable, 'signed executable bytes', { mode: 0o755 });
+            fs.symlinkSync('../MacOS/Honest Father', link);
+            const expected = { targetEntries: appTree(root) };
+            expected.targetTreeSHA256 = sha(JSON.stringify(expected.targetEntries));
+            assert.doesNotThrow(() => validateTargetEntries(expected.targetEntries));
+            assert.doesNotThrow(() => verifyAppTree(root, expected));
+            assert.equal(resolvePatchFile(root, 'Contents/MacOS/Honest Father'), executable);
+            assert.throws(() => resolvePatchFile(root, 'Contents/Resources/current'));
+            fs.appendFileSync(executable, 'tampered');
+            assert.throws(() => verifyAppTree(root, expected));
+            fs.writeFileSync(executable, 'signed executable bytes');
+            fs.chmodSync(executable, 0o644);
+            assert.throws(() => verifyAppTree(root, expected));
+            fs.chmodSync(executable, 0o755);
+            fs.unlinkSync(link);
+            fs.symlinkSync('../MacOS/another', link);
+            assert.throws(() => verifyAppTree(root, expected));
+            fs.unlinkSync(link);
+            fs.symlinkSync('../MacOS/Honest Father', link);
+            fs.writeFileSync(path.join(root, 'Contents/extra'), 'extra');
+            assert.throws(() => verifyAppTree(root, expected));
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
     }
-});
+);
 test('exact DR permits only certificate hash case differences, rejecting broader or per-build identities', () => {
     const requirement = `identifier "com.anayssa.honestfather" and certificate leaf = H"${'AB'.repeat(20)}"`;
     assert.doesNotThrow(() => assertExactRequirement(`designated => ${requirement.replace('AB'.repeat(20), 'ab'.repeat(20))}`, requirement));
