@@ -55,7 +55,7 @@ function createWindow(sendToRenderer, geminiSessionRef) {
         },
         onEnd: ({ reason }) => {
             require('./gemini').closeActiveSession(geminiSessionRef);
-            sendToRenderer('provider-session-ended', { reason: reason || 'The review session ended.' });
+            sendToRenderer('provider-session-ended', { reason: reason || 'The review session ended.', code: 'test_review' });
         },
     });
     currentReviewOverlay = reviewOverlay;
@@ -101,7 +101,7 @@ function createWindow(sendToRenderer, geminiSessionRef) {
     }
     if (result.failures.length) console.warn('Unavailable keyboard shortcuts:', result.failures);
 
-    setupWindowIpcHandlers(mainWindow);
+    setupWindowIpcHandlers(mainWindow, geminiSessionRef);
     mainWindow.on('blur', () => setShortcutsPaused(false));
     mainWindow.webContents.on('render-process-gone', () => setShortcutsPaused(false));
 
@@ -178,7 +178,7 @@ function disposeGlobalShortcuts() {
     shortcutRegistrar.dispose();
 }
 
-function setupWindowIpcHandlers(mainWindow) {
+function setupWindowIpcHandlers(mainWindow, geminiSessionRef) {
     const reviewOverlay = currentReviewOverlay;
     const isTrusted = event =>
         !mainWindow.isDestroyed() && event.sender === mainWindow.webContents && event.senderFrame === mainWindow.webContents.mainFrame;
@@ -246,6 +246,9 @@ function setupWindowIpcHandlers(mainWindow) {
     });
 
     mainWindow.once('closed', () => {
+        // This handler runs before the overlay's main-window listener. Abort pending
+        // image requests before end() removes that listener and its onEnd callback.
+        if (reviewOverlay?.isActive()) require('./gemini').closeActiveSession(geminiSessionRef);
         ipcMain.removeListener('view-changed', onViewChanged);
         ipcMain.removeHandler('window-minimize');
         ipcMain.removeHandler('toggle-window-visibility');

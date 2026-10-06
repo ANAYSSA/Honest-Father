@@ -728,7 +728,7 @@ function stopCapture() {
 }
 
 ipcRenderer.on('provider-session-ended', (event, data) => {
-    if (captureScreenOnly) return;
+    if (captureScreenOnly && !(captureTestReview && data?.code === 'test_review')) return;
     stopCapture();
     cheatingDaddyApp.handleSessionEnded(data?.reason || 'Session ended. Start a new session to continue.');
 });

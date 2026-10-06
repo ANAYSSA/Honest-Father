@@ -682,9 +682,11 @@ export class CheatingDaddyApp extends LitElement {
     }
 
     handleSessionEnded(reason) {
+        const wasTestReview = this.testReview;
         this._sessionStartGeneration = (this._sessionStartGeneration || 0) + 1;
         this.sessionActive = false;
         this.testReview = false;
+        if (wasTestReview) this.currentView = 'main';
         this._stopTimer();
         this.setStatus(reason);
         this.requestUpdate();

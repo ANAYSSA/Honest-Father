@@ -21,7 +21,7 @@ Requires macOS 13 or later, or 64-bit Windows 10/11.
 
 macOS builds have an ad hoc signature verified after packaging. They are not Developer ID signed or notarized, so macOS may require approval under **System Settings → Privacy & Security**. Windows builds are unsigned and may show SmartScreen. Each platform includes a `SHA256SUMS.txt` file for verifying downloads. Linux packaging is outside the scope of this fork's release workflow.
 
-## What changed in 0.10.1
+## What changed in 0.10.2
 
 - Added **Start Test Review** beside **Start Session**. It analyzes a multiple-choice practice question and circles the proposed correct radio button or checkbox directly on screen.
 - **Command + Enter** / **Ctrl + Enter** captures a new question. The show/hide shortcut toggles the marks in Test Review.

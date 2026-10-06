@@ -1034,3 +1034,64 @@ test('review cache respects the tracker retained-memory estimate within its 32 M
     );
     harness.api.stopCapture();
 });
+
+test('unexpected Test Review ending releases the screen, watchdog and local cache while ignoring unrelated Live failures', async () => {
+    const timers = [];
+    const intervalTimers = {
+        setInterval(callback) {
+            const timer = { callback, cleared: false };
+            timers.push(timer);
+            return timer;
+        },
+        clearInterval(timer) {
+            timer.cleared = true;
+        },
+    };
+    const environment = makeScreenshotEnvironment();
+    const harness = reviewHarness(environment, undefined, undefined, intervalTimers);
+    await harness.api.startCapture(5, 'medium', true, true);
+    assert.equal(await harness.screenshot(), true);
+    const stream = environment.videos[0].srcObject;
+    harness.listeners.get('provider-session-ended')({}, { reason: 'Unrelated old Live quota error' });
+    assert.equal(stream.videoTrack.stopped, false);
+    assert.equal(timers[0].cleared, false);
+    assert.equal(harness.app.ended, undefined);
+    harness.listeners.get('provider-session-ended')({}, { code: 'test_review', reason: 'Display configuration changed. Start Test Review again.' });
+    assert.equal(stream.videoTrack.stopped, true);
+    assert.equal(timers[0].cleared, true);
+    assert.match(harness.app.ended, /Display configuration changed/);
+    assert.equal(harness.calls.filter(call => call.channel === 'review:end').length, 1);
+    const previousMoves = harness.calls.filter(call => call.channel === 'review:move-answer').length;
+    timers[0].callback();
+    assert.equal(harness.calls.filter(call => call.channel === 'review:move-answer').length, previousMoves);
+    await harness.api.startCapture(5, 'medium', true, true);
+    assert.equal(await harness.screenshot(), true);
+    assert.equal(harness.calls.filter(call => call.channel === 'send-image-content').length, 2);
+    assert.equal(
+        harness.calls.some(call => call.channel === 'review:reuse-answer'),
+        false
+    );
+    harness.api.stopCapture();
+});
+
+test('unexpected Test Review ending during an AI request blocks its late answer from reopening the overlay', async () => {
+    let release;
+    const environment = makeScreenshotEnvironment();
+    const harness = reviewHarness(environment, channel => {
+        if (channel === 'send-image-content') return new Promise(resolve => (release = resolve));
+    });
+    await harness.api.startCapture(5, 'medium', true, true);
+    const capture = harness.screenshot();
+    while (!release) await new Promise(resolve => setImmediate(resolve));
+    const stream = environment.videos[0].srcObject;
+    harness.listeners.get('provider-session-ended')({}, { code: 'test_review', reason: 'Test Review overlay closed.' });
+    release({ success: true, reviewAnswer: REVIEW_ANSWER });
+    assert.equal(await capture, false);
+    assert.equal(stream.videoTrack.stopped, true);
+    assert.equal(
+        harness.calls.some(call => call.channel === 'review:show-answer'),
+        false
+    );
+    assert.equal(harness.calls.filter(call => call.channel === 'review:end').length, 1);
+    assert.match(harness.app.ended, /overlay closed/);
+});

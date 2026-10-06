@@ -168,7 +168,18 @@ test('a provider session ending resets the Test Review flag', () => {
     const { app } = loadApp();
     app.sessionActive = true;
     app.testReview = true;
+    app.currentView = 'assistant';
     app.handleSessionEnded('Screen capture stopped');
     assert.equal(app.sessionActive, false);
     assert.equal(app.testReview, false);
+    assert.equal(app.currentView, 'main');
+});
+
+test('ordinary Live session ending keeps its existing assistant view behavior', () => {
+    const { app } = loadApp();
+    app.sessionActive = true;
+    app.currentView = 'assistant';
+    app.handleSessionEnded('Live session ended');
+    assert.equal(app.sessionActive, false);
+    assert.equal(app.currentView, 'assistant');
 });
