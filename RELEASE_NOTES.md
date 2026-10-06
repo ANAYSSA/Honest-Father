@@ -6,13 +6,15 @@
 
 Honest Father is an open-source assistant for mock interviews, exam preparation, and learning, forked from Cheating Daddy.
 
-## New in 0.10.6
+## New in 0.10.7
 
-- Test Review reads frames directly from the existing shared-screen track when Chromium supports it. Static pages no longer depend on a hidden video element delivering compositor callbacks.
-- Snapshot, post-answer checks, and local scroll tracking use the same pixel source. Frame acquisition has a bounded timeout, cancellation, and bitmap cleanup; old or changed questions keep their marks hidden.
-- The compatibility video path accepts live-source frame counters instead of treating a zero presentation timestamp as a frozen stream.
-- This mode uses ordinary screen capture and a separate annotation window. It needs no browser extension, injected page script, or browser changes. Scroll tracking and cached answers remain local and use no extra AI requests.
-- The macOS signing identity, existing interface, and keyboard shortcuts are preserved.
+- Test Review now reads fresh, cursor-free snapshots of the selected display. Snapshot, post-answer validation, and local scroll tracking share the same native pixel source, without relying on a hidden video element.
+- Local frames keep one pixel per display point, so integer scroll movements do not introduce scaling differences. Only the JPEG sent to AI is resized by the image-quality setting; cache hits skip JPEG encoding and upload entirely. Local frames are bounded to 16 megapixels.
+- Capture requests are serialized through native completion, with bounded deadlines and session/display checks. Late or changed frames cannot reveal stale answer marks.
+- macOS annotation windows keep the full display bounds when shown, including areas near the menu bar and Dock. Bounds are checked again after the window opens.
+- Answer controls are located from their visible shape and size, including round, square, and styled controls. Uncertain locations are rejected; AI answers still need verification.
+- The browser is unchanged: ordinary screen capture and a separate annotation window require no extension or injected script. Scroll tracking and cached answers stay local and use no extra AI calls.
+- The macOS signing certificate, existing interface, and keyboard shortcuts are preserved.
 
 ## New in 0.10.5
 

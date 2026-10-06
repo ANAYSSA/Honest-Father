@@ -82,8 +82,8 @@ function createReviewOverlay({
         if (!selectedDisplay || !overlayWindow || overlayWindow.isDestroyed()) return;
         const bounds = overlayWindow.getBounds();
         if (['x', 'y', 'width', 'height'].every(key => bounds[key] === selectedDisplay.bounds[key])) return;
-        // Windows can fit constructor bounds to the work area, excluding the
-        // taskbar. The annotation coordinate system covers the entire display.
+        // Native windows can fit bounds to the work area, excluding system UI.
+        // The annotation coordinate system covers the entire display.
         overlayWindow.setBounds({ ...selectedDisplay.bounds }, false);
         const restored = overlayWindow.getBounds();
         if (!['x', 'y', 'width', 'height'].every(key => restored[key] === selectedDisplay.bounds[key])) throw new Error(BOUNDS_ERROR);
@@ -100,8 +100,17 @@ function createReviewOverlay({
             }
         }
         overlayWindow.webContents.send(UPDATE_CHANNEL, pendingUpdate);
-        if (desiredVisible) overlayWindow.showInactive();
-        else overlayWindow.hide();
+        if (desiredVisible) {
+            overlayWindow.showInactive();
+            try {
+                // macOS applies native frame constraints when a hidden window
+                // first becomes visible. Do not retain a displaced overlay.
+                restoreDisplayBounds();
+            } catch (error) {
+                endUnexpectedly(error.message);
+                return false;
+            }
+        } else overlayWindow.hide();
         return true;
     }
 
@@ -166,6 +175,9 @@ function createReviewOverlay({
             ...selectedDisplay.bounds,
             show: false,
             frame: false,
+            // Keep frameless macOS windows at display bounds when shown,
+            // including the areas occupied by the menu bar and Dock.
+            ...(platform === 'darwin' ? { enableLargerThanScreen: true } : {}),
             transparent: true,
             backgroundColor: '#00000000',
             hasShadow: false,

@@ -13,7 +13,7 @@ function makeAnswer() {
     );
 }
 
-function makeHarness(platform = 'darwin', { clampConstructor = false } = {}) {
+function makeHarness(platform = 'darwin', { clampConstructor = false, clampOnShow = false } = {}) {
     const windows = [];
     class FakeWindow extends EventEmitter {
         constructor(options) {
@@ -51,6 +51,11 @@ function makeHarness(platform = 'darwin', { clampConstructor = false } = {}) {
         showInactive() {
             this.visible = true;
             this.calls.push(['showInactive']);
+            if (this.clampNextShow || (clampOnShow && platform === 'darwin' && this.options.enableLargerThanScreen !== true)) {
+                this.bounds.y += 32;
+                this.bounds.height -= 80;
+                this.clampNextShow = false;
+            }
         }
         destroy() {
             this.destroyed = true;
@@ -148,6 +153,7 @@ test('overlay occupies the actual capture display including negative origin and 
     assert.equal(window.options.show, false);
     assert.equal(window.options.focusable, false);
     assert.equal(window.options.transparent, true);
+    assert.equal(window.options.enableLargerThanScreen, true);
     assert.equal(window.options.skipTaskbar, true);
     assert.equal(window.options.webPreferences.nodeIntegration, false);
     assert.equal(window.options.webPreferences.contextIsolation, true);
@@ -216,6 +222,55 @@ test('working macOS full-display bounds do not receive an unnecessary native rep
         window.calls.some(call => call[0] === 'setBounds'),
         false
     );
+});
+
+test('macOS preserves full-display bounds through initial reveal, tracking updates, and hide/show cycles', () => {
+    const harness = makeHarness('darwin', { clampOnShow: true });
+    const window = harness.start();
+    window.ready();
+    const token = harness.answer();
+    assert.equal(harness.manager.showAnswer(token, { x: 0, y: 0 }).success, true);
+    assert.deepEqual(window.getBounds(), harness.displays[1].bounds);
+    assert.equal(harness.manager.moveAnswer(token, { x: 0, y: 40 }).success, true);
+    assert.deepEqual(window.getBounds(), harness.displays[1].bounds);
+    assert.equal(harness.manager.toggle().visible, false);
+    assert.equal(harness.manager.toggle().visible, true);
+    assert.deepEqual(window.getBounds(), harness.displays[1].bounds);
+    assert.equal(harness.manager.isActive(), true);
+    assert.equal(harness.endings.length, 0);
+    assert.equal(harness.mainWindow.isVisible(), false);
+});
+
+test('bounds displaced by native reveal are restored immediately before continuing review', () => {
+    const harness = makeHarness();
+    const window = harness.start();
+    window.ready();
+    const token = harness.answer();
+    window.clampNextShow = true;
+    assert.equal(harness.manager.showAnswer(token, { x: 0, y: 0 }).success, true);
+    assert.deepEqual(window.getBounds(), harness.displays[1].bounds);
+    const restoredAt = window.calls.findIndex(call => call[0] === 'setBounds');
+    assert.deepEqual(window.calls.slice(restoredAt - 1, restoredAt + 1), [['showInactive'], ['setBounds', harness.displays[1].bounds, false]]);
+    assert.equal(harness.manager.isActive(), true);
+    assert.equal(harness.endings.length, 0);
+});
+
+test('bounds that cannot be restored after native reveal close the overlay immediately', () => {
+    const harness = makeHarness();
+    const window = harness.start();
+    window.ready();
+    const token = harness.answer();
+    window.clampNextShow = true;
+    window.refuseBounds = true;
+    const result = harness.manager.showAnswer(token, { x: 0, y: 0 });
+    assert.equal(result.success, false);
+    assert.match(result.error, /could not cover the captured display/);
+    assert.equal(window.isVisible(), false);
+    assert.equal(window.isDestroyed(), true);
+    assert.equal(harness.manager.isActive(), false);
+    assert.equal(harness.mainWindow.isVisible(), false);
+    assert.equal(harness.endings.length, 1);
+    assert.match(harness.endings[0].reason, /could not cover the captured display/);
 });
 
 test('native bounds that remain clamped prevent drawing and end review after a single restoration attempt', () => {

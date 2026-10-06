@@ -180,6 +180,7 @@ function disposeGlobalShortcuts() {
 
 function setupWindowIpcHandlers(mainWindow, geminiSessionRef, screenCapture) {
     const reviewOverlay = currentReviewOverlay;
+    let reviewCapture = null;
     const isTrusted = event =>
         !mainWindow.isDestroyed() && event.sender === mainWindow.webContents && event.senderFrame === mainWindow.webContents.mainFrame;
     const reviewHandlers = {
@@ -191,6 +192,13 @@ function setupWindowIpcHandlers(mainWindow, geminiSessionRef, screenCapture) {
         'review:hide-answer': token => reviewOverlay.hideAnswer(token),
         'review:clear': token => reviewOverlay.clear(token),
         'review:status': text => reviewOverlay.status(text),
+        'review:capture-frame': (token, imageQuality) => {
+            if (!reviewCapture) {
+                const { desktopCapturer } = require('electron');
+                reviewCapture = require('./reviewCapture').createReviewCapture({ desktopCapturer, reviewOverlay, screen });
+            }
+            return reviewCapture.captureFrame(token, imageQuality);
+        },
         'review:end': (options = {}) => {
             if (
                 !options ||
@@ -277,6 +285,7 @@ function setupWindowIpcHandlers(mainWindow, geminiSessionRef, screenCapture) {
         ipcMain.removeHandler('toggle-window-visibility');
         ipcMain.removeHandler('screen-capture:diagnostics');
         for (const channel of Object.keys(reviewHandlers)) ipcMain.removeHandler(channel);
+        reviewCapture?.dispose();
         reviewOverlay?.end();
         if (currentReviewOverlay === reviewOverlay) currentReviewOverlay = null;
         // Keep the global Quit shortcut available on macOS after the last window closes.

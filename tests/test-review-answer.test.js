@@ -163,6 +163,57 @@ test('mapping uses local display DIP coordinates even for a negative monitor ori
     assert.deepEqual(answer.answers[0].box, [400, 300, 420, 320]);
 });
 
+test('observed control sizes and proportions survive screenshot normalization without a fixed control template', () => {
+    const fixtures = [
+        {
+            screenshot: { width: 3000, height: 1800 },
+            display: { x: -1500, y: -300, width: 1500, height: 900, scaleFactor: 2 },
+            controls: [
+                { x: 420, y: 360, width: 48, height: 48 },
+                { x: 850, y: 500, width: 144, height: 36 },
+                { x: 1600, y: 700, width: 30, height: 96 },
+                { x: 2200, y: 1200, width: 120, height: 120 },
+                { x: 600, y: 1000, width: 8, height: 8 },
+            ],
+        },
+        {
+            screenshot: { width: 960, height: 1600 },
+            display: { x: 1500, y: 100, width: 480, height: 800, scaleFactor: 2 },
+            controls: [
+                { x: 200, y: 320, width: 20, height: 20 },
+                { x: 600, y: 650, width: 64, height: 16 },
+                { x: 400, y: 1100, width: 16, height: 96 },
+            ],
+        },
+    ];
+    const approximately = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} should equal ${expected}`);
+    for (const { screenshot, display, controls } of fixtures) {
+        const answers = controls.map((control, index) => ({
+            label: String(index + 1),
+            box: [
+                (control.y / screenshot.height) * 1000,
+                (control.x / screenshot.width) * 1000,
+                ((control.y + control.height) / screenshot.height) * 1000,
+                ((control.x + control.width) / screenshot.width) * 1000,
+            ],
+        }));
+        const parsed = parseReviewAnswer(JSON.stringify(response({ question_box: [0, 0, 1000, 1000], answers })));
+        assert.deepEqual(parsed.answers, answers);
+        const mapped = mapReviewAnswerToDisplay(parsed, display);
+        assert.equal(mapped.answers.length, controls.length);
+        mapped.answers.forEach(({ label, box }, index) => {
+            const control = controls[index];
+            assert.equal(label, answers[index].label);
+            approximately(box.x, control.x / 2);
+            approximately(box.y, control.y / 2);
+            approximately(box.width, control.width / 2);
+            approximately(box.height, control.height / 2);
+            approximately(box.x + box.width / 2, (control.x + control.width / 2) / 2);
+            approximately(box.y + box.height / 2, (control.y + control.height / 2) / 2);
+        });
+    }
+});
+
 test('full-screen normalized edges map to the display size without rounding or a global origin', () => {
     const answer = parseReviewAnswer(JSON.stringify(response({ question_box: [0, 0, 1000, 1000] })));
     assert.deepEqual(mapReviewAnswerToDisplay(answer, { x: 2560, y: 240, width: 1920, height: 1080 }).questionBox, {
@@ -191,6 +242,11 @@ test('invalid display bounds and unvalidated mapped answers are refused', () => 
 test('review prompts require complete structured visual controls and an explicit uncertainty refusal', () => {
     assert.match(REVIEW_SYSTEM_PROMPT, /ENTIRE screenshot/);
     assert.match(REVIEW_SYSTEM_PROMPT, /radio button or checkbox/);
+    assert.match(REVIEW_SYSTEM_PROMPT, /round, square, or styled differently/);
+    assert.match(REVIEW_SYSTEM_PROMPT, /actual visible bounding boxes/);
+    assert.match(REVIEW_SYSTEM_PROMPT, /not shape alone/);
+    assert.match(REVIEW_SYSTEM_PROMPT, /single-selection\/radio-button questions return exactly one/);
+    assert.match(REVIEW_SYSTEM_PROMPT, /explicitly allowing multiple selections/);
     assert.match(REVIEW_SYSTEM_PROMPT, /confidence is at least 0\.8/);
     assert.match(REVIEW_SYSTEM_PROMPT, /Do not click, select, submit/);
     assert.match(REVIEW_SYSTEM_PROMPT, /"answers":\[\],"confidence":0/);

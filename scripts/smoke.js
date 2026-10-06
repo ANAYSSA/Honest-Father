@@ -1,5 +1,5 @@
 // Launch the real Electron app with isolated storage and verify its rendered UI.
-const { app, BrowserWindow, screen, session } = require('electron');
+const { app, BrowserWindow, screen, session, ipcMain } = require('electron');
 const os = require('node:os');
 const path = require('node:path');
 const assert = require('node:assert/strict');
@@ -136,12 +136,66 @@ app.whenReady().then(async () => {
             },
             { useSystemPicker: false }
         );
+        // The PNG provider is injected only in this isolated smoke process. It
+        // encodes an in-memory canvas fixture, so CI needs no desktop permissions.
+        const fixture = await mediaSource.webContents.executeJavaScript(`(() => {
+            const canvas = document.createElement('canvas');
+            canvas.width = ${display.bounds.width};
+            canvas.height = ${display.bounds.height};
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#111'; ctx.font = '22px Arial';
+            ctx.fillText('Which remainder matches this expression?', 90, canvas.height * .14);
+            ctx.fillText('For n = 37, find n modulo 5.', 90, canvas.height * .23);
+            ['A: zero', 'B: two', 'C: three', 'D: four'].forEach((text, index) => {
+                const y = canvas.height * (.40 + index * .12);
+                ctx.strokeStyle = '#111'; ctx.lineWidth = 2;
+                ctx.beginPath(); ctx.arc(100, y - 8, 10, 0, 2 * Math.PI); ctx.stroke();
+                ctx.fillText(text, 125, y);
+            });
+            const y = canvas.height * .52 - 8;
+            return {
+                success: true, data: canvas.toDataURL('image/png').split(',')[1], mimeType: 'image/png', width: canvas.width, height: canvas.height,
+                answer: { questionBox: [50, 20, 950, 950], answers: [{ label: 'B', box: [(y - 12) / canvas.height * 1000, 88 / canvas.width * 1000, (y + 12) / canvas.height * 1000, 112 / canvas.width * 1000] }], confidence: .99 }
+            };
+        })()`);
+        let snapshotRequests = 0;
+        let simulatedAIRequests = 0;
+        ipcMain.removeHandler('review:capture-frame');
+        ipcMain.handle('review:capture-frame', (event, token, quality) => {
+            assert.equal(event.senderFrame, window.webContents.mainFrame);
+            assert.equal(quality, 'medium');
+            const valid = manager.validateCapture(token, { imageWidth: fixture.width, imageHeight: fixture.height });
+            if (!valid.success) return { success: false, code: 'stale', error: valid.error };
+            snapshotRequests++;
+            return { success: true, data: fixture.data, mimeType: fixture.mimeType, width: fixture.width, height: fixture.height };
+        });
+        ipcMain.removeHandler('send-image-content');
+        ipcMain.handle('send-image-content', (event, payload) => {
+            assert.equal(event.senderFrame, window.webContents.mainFrame);
+            assert.ok(payload.reviewCapture, 'The smoke AI stub handles only Test Review');
+            simulatedAIRequests++;
+            const cached = manager.cacheAnswer(payload.reviewCapture, fixture.answer, {
+                imageWidth: payload.imageWidth,
+                imageHeight: payload.imageHeight,
+            });
+            assert.equal(cached.success, true, cached.error);
+            return { success: true, reviewAnswer: fixture.answer };
+        });
         for (const review of [false, true]) {
             if (review) assert.equal(manager.recordSource({ display_id: String(display.id) }).success, true);
             const capture = await window.webContents.executeJavaScript(`(async () => {
                 const original = navigator.mediaDevices.getDisplayMedia.bind(navigator.mediaDevices);
+                const originalDecode = window.createImageBitmap;
                 let stream;
                 let requested;
+                const decodedFrames = [];
+                window.createImageBitmap = async blob => {
+                    if (blob.type !== 'image/png') throw new Error('Native Review expects PNG');
+                    const bitmap = await originalDecode(blob);
+                    decodedFrames.push({ width: bitmap.width, height: bitmap.height });
+                    return bitmap;
+                };
                 navigator.mediaDevices.getDisplayMedia = async options => {
                     requested = options;
                     stream = await original(options);
@@ -150,37 +204,20 @@ app.whenReady().then(async () => {
                 try {
                     const success = await window.cheatingDaddy.startCapture(5, 'medium', true, ${review});
                     const settings = stream?.getVideoTracks()[0].getSettings();
-                    let rawFrames = null;
+                    let screenshot = null;
                     if (success && ${review}) {
-                        if (typeof ImageCapture !== 'function') throw new Error('Native ImageCapture is unavailable');
-                        const request = { generation: captureGeneration };
-                        const dimensions = [];
-                        const canvas = document.createElement('canvas');
-                        const context = canvas.getContext('2d', { willReadFrequently: true });
-                        for (let read = 0; read < 2; read++) {
-                            // The real hidden Test Review renderer reads the existing
-                            // static tab track before and after a simulated AI wait.
-                            // No HTMLVideoElement/compositor callbacks are involved.
-                            const bitmap = await grabReviewBitmap(stream, request, true);
-                            if (!bitmap) throw new Error('Native static frame read was canceled');
-                            try {
-                                canvas.width = bitmap.width;
-                                canvas.height = bitmap.height;
-                                context.drawImage(bitmap, 0, 0);
-                                const pixels = context.getImageData(0, 0, 1, 1);
-                                dimensions.push({ width: bitmap.width, height: bitmap.height, readable: pixels.data.length === 4 });
-                            } finally {
-                                bitmap.close();
-                            }
-                            if (read === 0) await new Promise(resolve => setTimeout(resolve, 250));
-                        }
-                        rawFrames = { dimensions, detachedVideo: hiddenVideo !== null };
+                        // Runs initial -> mock AI -> post-AI native PNG reads through
+                        // the real decoder/tracker while the main window is hidden.
+                        screenshot = await window.cheatingDaddy.captureManualScreenshot('medium');
                     }
-                    return {success, requested, width:settings?.width,height:settings?.height,frameRate:settings?.frameRate,rawFrames};
+                    return { success, requested, width:settings?.width, height:settings?.height, frameRate:settings?.frameRate,
+                        screenshot, decodedFrames, detachedVideo: hiddenVideo !== null,
+                        matched: reviewFrameGuard?.hidden === false };
                 } finally {
                     window.cheatingDaddy.stopCapture();
                     await require('electron').ipcRenderer.invoke('review:end');
                     navigator.mediaDevices.getDisplayMedia = original;
+                    window.createImageBitmap = originalDecode;
                 }
             })()`);
             assert.equal(capture.success, true, 'Real getDisplayMedia negotiation succeeds');
@@ -190,15 +227,19 @@ app.whenReady().then(async () => {
             assert.ok(capture.frameRate <= (review ? 5 : 1));
             if (review) {
                 assert.equal(window.isVisible(), true, 'Smoke cleanup restores the main window');
-                assert.equal(capture.rawFrames.detachedVideo, false, 'Native Review snapshots bypass the detached video compositor');
-                assert.equal(capture.rawFrames.dimensions.length, 2);
-                for (const frame of capture.rawFrames.dimensions) {
-                    assert.ok(frame.width > 0 && frame.height > 0, 'A hidden static source delivers a native ImageCapture bitmap');
-                    assert.equal(frame.readable, true);
+                assert.equal(capture.screenshot, true, 'Native Review completes with a mocked AI response');
+                assert.equal(capture.matched, true, 'Strict tracking approves identical cursorless PNG pixels');
+                assert.equal(capture.detachedVideo, false, 'Review bypasses video/ImageCapture frame readers');
+                assert.ok(capture.decodedFrames.length >= 2, 'Initial and post-AI frames use the actual PNG decoder');
+                for (const frame of capture.decodedFrames) {
+                    assert.equal(frame.width, fixture.width);
+                    assert.equal(frame.height, fixture.height);
                 }
             }
             console.log('Native synthetic media negotiation passed:', JSON.stringify({ review, ...capture }));
         }
+        assert.ok(snapshotRequests >= 2, 'Both Review acquisition barriers request the synthetic native provider');
+        assert.equal(simulatedAIRequests, 1, 'Review requests one mocked AI answer');
         assert.equal(nativeRequests, 2, 'Each start acquires one stream without retrying');
         if (process.platform === 'darwin') {
             session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => callback(null), { useSystemPicker: false });

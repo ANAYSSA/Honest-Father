@@ -562,93 +562,120 @@ function waitForVideoFrame(video, request, fresh = false) {
     });
 }
 
-async function grabReviewBitmap(stream, request, flushQueuedFrame = false, timeoutMs = 5000) {
+const REVIEW_FRAME_PIXELS = 16 * 1024 * 1024;
+const REVIEW_FRAME_ENCODED_BYTES = 22 * 1024 * 1024;
+const REVIEW_FRAME_DECODED_BYTES = 16 * 1024 * 1024;
+
+function grabReviewBitmap(stream, request, token, imageQuality, captureBarrier = 'none', timeoutMs = 5000) {
     const track = stream.getVideoTracks()[0];
-    if (!track || typeof ImageCapture !== 'function') throw new Error('The shared screen has no supported frame reader. Share it again.');
-    const isCurrent = () => request.generation === captureGeneration && stream === mediaStream && track.readyState !== 'ended';
-    if (!isCurrent()) return null;
-    const reader = new ImageCapture(track);
-    const deadline = Date.now() + timeoutMs;
-    const grab = () =>
-        new Promise((resolve, reject) => {
-            let settled = false;
-            const cleanup = () => {
-                settled = true;
-                clearTimeout(timeout);
-                if (request.cancelFrameWait === cancel) request.cancelFrameWait = null;
-            };
-            const cancel = () => {
-                cleanup();
-                resolve(null);
-            };
-            const timeout = setTimeout(
-                () => {
-                    cleanup();
-                    reject(new Error('The shared screen did not return a fresh frame. Share it again.'));
-                },
-                Math.max(1, deadline - Date.now())
-            );
-            request.cancelFrameWait = cancel;
-            Promise.resolve()
-                .then(() => (settled || !isCurrent() ? null : reader.grabFrame()))
-                .then(
-                    bitmap => {
-                        if (settled || !isCurrent()) {
-                            bitmap?.close?.();
-                            if (!settled) cancel();
-                            return;
-                        }
-                        if (
-                            !bitmap ||
-                            !Number.isInteger(bitmap.width) ||
-                            !Number.isInteger(bitmap.height) ||
-                            bitmap.width <= 0 ||
-                            bitmap.height <= 0
-                        ) {
-                            bitmap?.close?.();
-                            cleanup();
-                            reject(new Error('The shared screen returned an empty frame. Share it again.'));
-                            return;
-                        }
-                        cleanup();
-                        resolve(bitmap);
-                    },
-                    error => {
-                        if (settled) return;
-                        cleanup();
-                        if (!isCurrent()) resolve(null);
-                        else
-                            reject(
-                                new Error(
-                                    `Unable to read the shared screen frame: ${typeof error === 'string' ? error : error?.message || 'capture failed'}`
-                                )
-                            );
+    const isCurrent = () =>
+        captureTestReview && request.generation === captureGeneration && stream === mediaStream && track && track.readyState !== 'ended';
+    if (!isCurrent()) return Promise.resolve(null);
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        let settleTimer = null;
+        let settleResolve = null;
+        const cleanup = () => {
+            settled = true;
+            clearTimeout(timeout);
+            if (settleTimer !== null) clearTimeout(settleTimer);
+            settleResolve?.(false);
+            if (request.cancelFrameWait === cancel) request.cancelFrameWait = null;
+        };
+        const cancel = () => {
+            cleanup();
+            resolve(null);
+        };
+        const timeout = setTimeout(() => {
+            cleanup();
+            reject(new Error('The shared screen did not return a fresh snapshot in time. Try capturing again.'));
+        }, timeoutMs);
+        request.cancelFrameWait = cancel;
+        const current = () => !settled && isCurrent();
+        Promise.resolve()
+            .then(async () => {
+                if (!current()) return null;
+                if (captureBarrier !== 'none') {
+                    // prepare-capture has already hidden all windows before the initial read.
+                    // hide-answer requires an existing cached answer, which only exists after AI/reuse.
+                    if (captureBarrier === 'hide') {
+                        const hidden = await ipcRenderer.invoke('review:hide-answer', token);
+                        if (!current()) return null;
+                        if (hidden?.success === false) throw new Error(hidden.error || 'Test Review is no longer ready. Start it again.');
                     }
-                );
-        });
-    if (flushQueuedFrame) {
-        // ImageCapture reads the track directly, bypassing the hidden video
-        // compositor. Discard a possibly queued pre-hide frame before the next
-        // read, rather than approving an old buffer merely because it is loaded.
-        const queued = await grab();
-        if (!queued) return null;
-        queued.close();
-        if (!isCurrent()) return null;
-        const settled = await new Promise(resolve => {
-            const cancel = () => {
-                clearTimeout(timer);
-                if (request.cancelFrameWait === cancel) request.cancelFrameWait = null;
-                resolve(false);
-            };
-            const timer = setTimeout(() => {
-                if (request.cancelFrameWait === cancel) request.cancelFrameWait = null;
-                resolve(isCurrent());
-            }, 150);
-            request.cancelFrameWait = cancel;
-        });
-        if (!settled || !isCurrent()) return null;
-    }
-    return isCurrent() ? grab() : null;
+                    const ready = await new Promise(done => {
+                        settleResolve = done;
+                        settleTimer = setTimeout(() => {
+                            settleTimer = null;
+                            settleResolve = null;
+                            done(current());
+                        }, 150);
+                    });
+                    if (!ready || !current()) return null;
+                }
+                const frame = await ipcRenderer.invoke('review:capture-frame', token, imageQuality);
+                if (!current()) return null;
+                if (!frame?.success) {
+                    if (frame?.code === 'stale') return null;
+                    throw new Error(frame?.error || 'Unable to capture a fresh screen snapshot. Try again.');
+                }
+                if (
+                    frame.mimeType !== 'image/png' ||
+                    typeof frame.data !== 'string' ||
+                    !frame.data.length ||
+                    frame.data.length > REVIEW_FRAME_ENCODED_BYTES ||
+                    frame.data.length % 4 !== 0 ||
+                    !/^[A-Za-z0-9+/]+={0,2}$/.test(frame.data) ||
+                    !Number.isInteger(frame.width) ||
+                    !Number.isInteger(frame.height) ||
+                    frame.width <= 0 ||
+                    frame.height <= 0 ||
+                    frame.width > 16384 ||
+                    frame.height > 16384 ||
+                    frame.width * frame.height > REVIEW_FRAME_PIXELS
+                )
+                    throw new Error('The screen snapshot has invalid dimensions or exceeds the safe image limit.');
+                const bytes = Buffer.from(frame.data, 'base64');
+                if (
+                    bytes.length < 33 ||
+                    bytes.length > REVIEW_FRAME_DECODED_BYTES ||
+                    !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ||
+                    bytes.readUInt32BE(8) !== 13 ||
+                    bytes.toString('ascii', 12, 16) !== 'IHDR' ||
+                    bytes.readUInt32BE(16) !== frame.width ||
+                    bytes.readUInt32BE(20) !== frame.height
+                )
+                    throw new Error('The screen snapshot is not a valid bounded PNG image.');
+                if (!current()) return null;
+                const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
+                if (!current()) {
+                    bitmap.close();
+                    return null;
+                }
+                if (bitmap.width !== frame.width || bitmap.height !== frame.height) {
+                    bitmap.close();
+                    throw new Error('The decoded screen snapshot does not match its dimensions.');
+                }
+                return bitmap;
+            })
+            .then(
+                bitmap => {
+                    if (!current()) {
+                        bitmap?.close?.();
+                        if (!settled) cancel();
+                        return;
+                    }
+                    cleanup();
+                    resolve(bitmap);
+                },
+                error => {
+                    if (settled) return;
+                    if (!isCurrent()) return cancel();
+                    cleanup();
+                    reject(new Error(typeof error === 'string' ? error : error?.message || 'Unable to capture a fresh screen snapshot. Try again.'));
+                }
+            );
+    });
 }
 
 function stopReviewWatchdog() {
@@ -680,25 +707,25 @@ function cacheReviewQuestion(guard, replacedEntry) {
     }
 }
 
-function readReviewFrame(guard, request = null, flushQueuedFrame = false) {
-    if (guard.useRawCapture) {
-        return (async () => {
-            const bitmap = await grabReviewBitmap(guard.stream, request, flushQueuedFrame, request === guard.frameRequest ? 1000 : 5000);
-            if (!bitmap) return null;
-            try {
-                if (bitmap.width !== guard.sourceWidth || bitmap.height !== guard.sourceHeight) return null;
-                guard.context.drawImage(bitmap, 0, 0, guard.frameWidth, guard.frameHeight);
-                return guard.context.getImageData(0, 0, guard.frameWidth, guard.frameHeight);
-            } finally {
-                bitmap.close();
-            }
-        })();
+async function readReviewFrame(guard, request, hideBeforeCapture = false) {
+    const bitmap = await grabReviewBitmap(
+        guard.stream,
+        request,
+        guard.token,
+        guard.imageQuality,
+        hideBeforeCapture ? 'hide' : 'none',
+        request === guard.frameRequest ? 1000 : 5000
+    );
+    if (!bitmap) return null;
+    try {
+        if (guard.generation !== captureGeneration || guard.stream !== mediaStream || (request === guard.frameRequest && reviewFrameGuard !== guard))
+            return null;
+        if (bitmap.width !== guard.sourceWidth || bitmap.height !== guard.sourceHeight) return null;
+        guard.context.drawImage(bitmap, 0, 0, guard.frameWidth, guard.frameHeight);
+        return guard.context.getImageData(0, 0, guard.frameWidth, guard.frameHeight);
+    } finally {
+        bitmap.close();
     }
-    if (guard.video.videoWidth !== guard.sourceWidth || guard.video.videoHeight !== guard.sourceHeight || guard.video.readyState < 2) {
-        return null;
-    }
-    guard.context.drawImage(guard.video, 0, 0, guard.frameWidth, guard.frameHeight);
-    return guard.context.getImageData(0, 0, guard.frameWidth, guard.frameHeight);
 }
 
 function startReviewWatchdog(guard) {
@@ -777,7 +804,6 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false, prom
     const request = { generation };
     screenshotRequest = request;
     const testReview = captureTestReview;
-    const useRawCapture = testReview && typeof ImageCapture === 'function';
     let captureBitmap = null;
     let reviewCapture = null;
     if (testReview) stopReviewWatchdog();
@@ -786,7 +812,7 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false, prom
         cheatingDaddy.setStatus('Reading screen...');
         // Keep local references across async work: ending a session clears the shared references.
         let video = hiddenVideo;
-        if (!useRawCapture && !video) {
+        if (!testReview && !video) {
             video = document.createElement('video');
             video.srcObject = stream;
             video.muted = true;
@@ -795,7 +821,7 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false, prom
             await video.play();
         }
         if (!isCurrent()) return false;
-        if (!useRawCapture && video.readyState < 2 && !(await waitForVideoFrame(video, request))) return false;
+        if (!testReview && video.readyState < 2 && !(await waitForVideoFrame(video, request))) return false;
         if (!isCurrent()) return false;
         if (testReview) {
             reviewCapture = await ipcRenderer.invoke('review:prepare-capture');
@@ -804,20 +830,20 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false, prom
             if (!reviewCapture?.captureId || !reviewCapture.requestId || !reviewCapture.display) {
                 throw new Error('Test Review could not identify the shared display. Start it again.');
             }
-            if (useRawCapture) {
-                captureBitmap = await grabReviewBitmap(stream, request, true);
-                if (!captureBitmap || !isCurrent()) return false;
-            } else if (!(await waitForVideoFrame(video, request, true)) || !isCurrent()) return false;
+            captureBitmap = await grabReviewBitmap(stream, request, reviewCapture, imageQuality, 'prepared');
+            if (!captureBitmap || !isCurrent()) return false;
         }
-        const sourceWidth = useRawCapture ? captureBitmap.width : video.videoWidth;
-        const sourceHeight = useRawCapture ? captureBitmap.height : video.videoHeight;
+        const sourceWidth = testReview ? captureBitmap.width : video.videoWidth;
+        const sourceHeight = testReview ? captureBitmap.height : video.videoHeight;
         if (!sourceWidth || !sourceHeight) throw new Error('The shared screen is empty. Share it again.');
 
         // Keep small text legible; lower quality remains available for slow connections.
         const maxWidths = { high: 2560, medium: 1920, low: 1280 };
         const maxWidth = maxWidths[imageQuality] ?? maxWidths.medium;
-        const width = Math.min(sourceWidth, maxWidth);
-        const height = Math.round((sourceHeight * width) / sourceWidth);
+        // Review tracking stays on the provider's exact one-pixel-per-DIP grid.
+        // Resampling a local frame changes text pixels after fractional scrolling.
+        const width = testReview ? sourceWidth : Math.min(sourceWidth, maxWidth);
+        const height = testReview ? sourceHeight : Math.round((sourceHeight * width) / sourceWidth);
         const canvas = document.createElement('canvas');
         canvas.width = width;
         canvas.height = height;
@@ -825,7 +851,7 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false, prom
         if (!context) throw new Error('Unable to read the shared screen. Share it again.');
         offscreenCanvas = canvas;
         offscreenContext = context;
-        context.drawImage(useRawCapture ? captureBitmap : video, 0, 0, width, height);
+        context.drawImage(testReview ? captureBitmap : video, 0, 0, width, height);
         captureBitmap?.close();
         captureBitmap = null;
         const reviewSnapshot = testReview ? context.getImageData(0, 0, width, height) : null;
@@ -845,8 +871,19 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false, prom
             }
         }
         if (!result) {
+            let imageCanvas = canvas;
+            if (testReview) {
+                // Build the network image only for a new AI request. Normalized
+                // answer boxes remain compatible with the full local DIP grid.
+                imageCanvas = document.createElement('canvas');
+                imageCanvas.width = Math.min(sourceWidth, maxWidth);
+                imageCanvas.height = Math.round((sourceHeight * imageCanvas.width) / sourceWidth);
+                const imageContext = imageCanvas.getContext('2d');
+                if (!imageContext) throw new Error('Unable to encode the screenshot. Try again.');
+                imageContext.drawImage(canvas, 0, 0, imageCanvas.width, imageCanvas.height);
+            }
             const qualityValues = { high: 0.95, medium: 0.88, low: 0.7 };
-            const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', qualityValues[imageQuality] ?? qualityValues.medium));
+            const blob = await new Promise(resolve => imageCanvas.toBlob(resolve, 'image/jpeg', qualityValues[imageQuality] ?? qualityValues.medium));
             if (!isCurrent()) return false;
             if (!blob) throw new Error('Unable to encode the screenshot. Try again.');
 
@@ -863,8 +900,8 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false, prom
             const payload = { data: base64data };
             if (testReview) {
                 payload.reviewCapture = reviewCapture;
-                payload.imageWidth = width;
-                payload.imageHeight = height;
+                payload.imageWidth = imageCanvas.width;
+                payload.imageHeight = imageCanvas.height;
             } else if (isManual) {
                 payload.prompt = prompt || MANUAL_SCREENSHOT_PROMPT;
                 // A requested answer should appear immediately even while browsing older responses.
@@ -890,13 +927,11 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false, prom
             if (!result.reviewAnswer) throw new Error('Test Review returned no usable answer markers. Try again.');
             await ipcRenderer.invoke('review:status', '');
             if (!isCurrent()) return false;
-            if (!useRawCapture && (!(await waitForVideoFrame(video, request, true)) || !isCurrent())) return false;
             const guard = {
                 generation,
                 stream,
-                video,
                 context,
-                useRawCapture,
+                imageQuality,
                 frameWidth: width,
                 frameHeight: height,
                 snapshotBytes: reviewSnapshot.data.byteLength,
@@ -906,7 +941,7 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false, prom
                 sourceHeight,
                 tracker: createReviewFrameTracker(reviewSnapshot, result.reviewAnswer),
             };
-            const currentFrame = await readReviewFrame(guard, request, useRawCapture);
+            const currentFrame = await readReviewFrame(guard, request, true);
             if (!isCurrent()) return false;
             const location = currentFrame ? guard.tracker.locate(currentFrame) : { state: 'hidden' };
             guard.hidden = location.state !== 'matched';
