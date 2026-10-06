@@ -399,8 +399,7 @@ function shiftedAnswer(answer, offset) {
  * Tracks translations of a cached question using local screenshot pixels only.
  * At most 640 x 640 grayscale samples, 48 coarse candidates, 4096 refinement
  * probes and 8 dense question comparisons (16 million pixels total) are used.
- * Stable positions reuse
- * their last match. It requires distinct text-like anchors in the question
+ * Verified initial and stable positions reuse their known alignment. It requires distinct text-like anchors in the question
  * and choice area, then checks the whole aligned question region. Untextured,
  * ambiguous, clipped, changed, or resized questions hide the annotation. This
  * conservative pixel matcher is not OCR or a semantic correctness guarantee.
@@ -442,12 +441,12 @@ function createReviewFrameTracker(snapshotImageData, reviewAnswer) {
             const pixelRead = (point, x, y) =>
                 x >= 0 && y >= 0 && x < currentImageData.width && y < currentImageData.height ? grayAt(currentImageData, x, y) : null;
             const denseBudget = { remaining: MAX_DENSE_PIXELS };
+            const knownOffset = lastOffset || { x: 0, y: 0 };
             if (
-                lastOffset &&
-                anchors.every(anchor => anchorMatches(anchor, pixelRead, lastOffset, sourceGeometry, lastOffset, gray.scaleX, gray.scaleY)) &&
-                compareQuestion(snapshot, currentImageData, sourceGeometry, lastOffset, lastOffset, features, denseBudget)
+                anchors.every(anchor => anchorMatches(anchor, pixelRead, knownOffset, sourceGeometry, lastOffset, gray.scaleX, gray.scaleY)) &&
+                compareQuestion(snapshot, currentImageData, sourceGeometry, knownOffset, lastOffset, features, denseBudget)
             ) {
-                return matched(lastOffset);
+                return matched(knownOffset);
             }
             const currentGray = grayscale(currentImageData);
             const candidates = [];
@@ -491,8 +490,20 @@ function createReviewFrameTracker(snapshotImageData, reviewAnswer) {
                                 matchingAnchors++;
                         }
                         if (matchingAnchors < 3) continue;
-                        if (!candidates.some(candidate => candidate.dx === dx && candidate.dy === dy)) candidates.push({ dx, dy, offset });
-                        if (candidates.length > MAX_COARSE_CANDIDATES) return hidden('unmatched');
+                        if (candidates.some(candidate => candidate.dx === dx && candidate.dy === dy)) continue;
+                        // Repeated letters create many loose coarse matches. Keep
+                        // a bounded best set rather than rejecting the real match
+                        // before its row is reached. Dense verification is unchanged.
+                        let score = 0;
+                        for (const anchor of anchors) {
+                            for (const point of anchor.points) {
+                                const value = coarseRead(point, 0, 0, dx, dy);
+                                score += value === null ? 255 : Math.abs(point.value - value);
+                            }
+                        }
+                        candidates.push({ dx, dy, offset, score });
+                        candidates.sort((a, b) => a.score - b.score);
+                        if (candidates.length > MAX_COARSE_CANDIDATES) candidates.pop();
                     }
                 }
                 if (candidates.length) break;

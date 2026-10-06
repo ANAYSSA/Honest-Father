@@ -208,9 +208,11 @@ test('untextured screens and ambiguous repeated questions cannot acquire an anno
     text(image, 210, 100, 683, 24);
     text(image, 210, 145, 4051, 27);
     const repeatedAnswer = { ...answer, questionBox: [20, 200, 190, 800], answers: [{ label: 'C', box: [135, 220, 150, 240] }] };
-    const duplicated = translate(image, 0, 0, repeatedAnswer.questionBox);
-    const second = translate(image, 0, 240, repeatedAnswer.questionBox);
-    for (let y = 260; y < 430; y++) {
+    // Neither copy remains at the known initial position: local acquisition
+    // must choose between two equally valid translated instances and refuse.
+    const duplicated = translate(image, 0, 180, repeatedAnswer.questionBox);
+    const second = translate(image, 0, 420, repeatedAnswer.questionBox);
+    for (let y = 440; y < 610; y++) {
         duplicated.data.set(second.data.subarray(y * 800 * 4, (y + 1) * 800 * 4), y * 800 * 4);
     }
     assert.equal(createReviewFrameTracker(image, repeatedAnswer).locate(duplicated).state, 'hidden');
@@ -302,4 +304,49 @@ test('real browser Arial glyphs acquire and track exact 61-pixel scrolling, both
         assert.equal(again.state, 'matched');
         assert.deepEqual(again.offset, standalone.offset);
     }
+});
+
+test('small raster glyphs acquire at their known position and rank real scroll offsets above repeated coarse aliases', () => {
+    // Fully generated glyphs, no screen/course content. Small letters sampled
+    // on a 640-pixel search grid produce more than 48 loose coarse candidates,
+    // reproducing the former refusal of even the exact unchanged source.
+    const image = frame(1710, 1107, 255);
+    text(image, 200, 325, 211, 85, 1);
+    text(image, 200, 354, 212, 85, 1);
+    for (const [index, y] of [430, 475, 520, 575].entries()) text(image, 225, y, 683 + index * 29, 85, 1);
+    const answer = {
+        questionBox: [270, 70, 580, 787],
+        answers: [{ label: 'B', box: [395, 94, 411, 107] }],
+        confidence: 0.9,
+    };
+    const tracker = createReviewFrameTracker(image, answer);
+    assert.equal(isReviewFrameUnchanged(image, image, answer), true);
+    assert.equal(tracker.locate(image).state, 'matched');
+    for (const dy of [53, 61, -53, -61, 0]) {
+        const moved = translate(image, 0, dy, answer.questionBox);
+        const result = tracker.locate(moved);
+        assert.equal(result.state, 'matched', `Cached translation ${dy}`);
+        assert.deepEqual(result.offset, { x: 0, y: (dy * 1000) / image.height });
+        const standalone = createReviewFrameTracker(image, answer).locate(moved);
+        assert.equal(standalone.state, 'matched', `Initial translation ${dy}`);
+        assert.deepEqual(standalone.offset, result.offset);
+    }
+
+    const changed = copy(image);
+    let erased = 0;
+    const top = Math.floor((answer.questionBox[0] * image.height) / 1000);
+    const left = Math.floor((answer.questionBox[1] * image.width) / 1000);
+    const right = Math.ceil((answer.questionBox[3] * image.width) / 1000);
+    for (let y = top; y < top + 80 && erased < 8; y++) {
+        for (let x = left; x < right && erased < 8; x++) {
+            const index = (y * image.width + x) * 4;
+            if (changed.data[index] < 80 && changed.data[index + 1] < 80 && changed.data[index + 2] < 80) {
+                changed.data[index] = changed.data[index + 1] = changed.data[index + 2] = 255;
+                erased++;
+            }
+        }
+    }
+    assert.equal(erased, 8);
+    assert.equal(tracker.locate(changed).state, 'hidden', 'A tiny real glyph edit still refuses an unchanged-position match');
+    assert.equal(tracker.locate(image).state, 'matched');
 });

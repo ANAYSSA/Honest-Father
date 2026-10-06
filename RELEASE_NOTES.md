@@ -8,6 +8,7 @@ Honest Father is an open-source assistant for mock interviews, exam preparation,
 
 ## New in 0.10.8
 
+- Fixed Test Review rejecting an unchanged question layout after a successful AI reply, which left the answer marker hidden. Frame matching keeps the checks that hide changed or off-screen questions.
 - Gemini screenshot requests now use Electron’s system-aware networking, including model discovery and streaming replies, with bounded timeouts and cancellation. Temporary failures retain safe diagnostic codes without logging keys or screenshot contents.
 - **Command + \\ / Ctrl + \\** shows or hides the app window in both modes. **Command + Shift + \\ / Ctrl + Shift + \\** independently toggles Test Review marks or stored notices. Both shortcuts can be customized.
 - **Customize → Appearance** now includes saved marker color and opacity (10–100%). Changes apply to existing marks immediately without revealing hidden ones.
