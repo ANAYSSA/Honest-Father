@@ -2,6 +2,7 @@
 // This script uses the local keychain-signed output; it never exports the key.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
@@ -31,7 +32,22 @@ for (const platform of ['darwin / arm64', 'win32 / x64']) {
         `${platform} must pass`
     );
 }
-verifyMacApp(path.join(root, 'out/Honest Father-darwin-arm64/Honest Father.app'), { requireStableSigning: true });
+const referenceApp = path.join(root, 'out/Honest Father-darwin-arm64/Honest Father.app');
+function verifyPublishedApp(bundle) {
+    verifyMacApp(bundle, { requireStableSigning: true });
+    const plist = path.join(bundle, 'Contents', 'Info.plist');
+    for (const key of ['CFBundleShortVersionString', 'CFBundleVersion']) {
+        assert.equal(command('/usr/libexec/PlistBuddy', ['-c', `Print :${key}`, plist]), version, `Wrong packaged ${key}`);
+    }
+}
+function asarHash(bundle) {
+    return crypto
+        .createHash('sha256')
+        .update(fs.readFileSync(path.join(bundle, 'Contents', 'Resources', 'app.asar')))
+        .digest('hex');
+}
+verifyPublishedApp(referenceApp);
+const referenceAsarHash = asarHash(referenceApp);
 const prefix = `Honest-Father-${version}-macos-arm64`;
 const directory = path.join(root, 'out/releases');
 const manifest = `${prefix}-SHA256SUMS.txt`;
@@ -49,6 +65,44 @@ for (const line of lines) {
     files.delete(match[2]);
 }
 assert.equal(files.size, 0);
+// Validate the apps inside the exact archives being uploaded. Verifying the
+// unpackaged output alone can allow stale ad-hoc packages through publication.
+const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'honest-release-verification-'));
+const zipDirectory = path.join(temporary, 'zip');
+const mountPoint = path.join(temporary, 'dmg');
+let mounted = false;
+try {
+    fs.mkdirSync(zipDirectory);
+    fs.mkdirSync(mountPoint);
+    command('/usr/bin/ditto', ['-x', '-k', path.join(directory, `${prefix}.zip`), zipDirectory]);
+    const zipApp = path.join(zipDirectory, 'Honest Father.app');
+    verifyPublishedApp(zipApp);
+    assert.equal(asarHash(zipApp), referenceAsarHash, 'ZIP app code must match the verified release output');
+    command('/usr/bin/hdiutil', [
+        'attach',
+        path.join(directory, `${prefix}.dmg`),
+        '-readonly',
+        '-nobrowse',
+        '-noautoopen',
+        '-mountpoint',
+        mountPoint,
+    ]);
+    mounted = true;
+    const dmgApp = path.join(mountPoint, 'Honest Father.app');
+    verifyPublishedApp(dmgApp);
+    assert.equal(asarHash(dmgApp), referenceAsarHash, 'DMG app code must match the verified release output');
+} finally {
+    if (mounted) {
+        try {
+            command('/usr/bin/hdiutil', ['detach', mountPoint]);
+        } catch {
+            // Only detach the mount point created above. If both attempts fail,
+            // leave the directory intact rather than deleting a mounted volume.
+            command('/usr/bin/hdiutil', ['detach', mountPoint, '-force']);
+        }
+    }
+    fs.rmSync(temporary, { recursive: true, force: true });
+}
 command('gh', ['release', 'view', tag, '-R', repository]);
 execFileSync(
     'gh',

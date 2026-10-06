@@ -23,8 +23,12 @@ function verifyMacApp(appPath, { requireStableSigning = process.env.HONEST_FATHE
     if (requireStableSigning) {
         execFileSync('/usr/bin/codesign', ['--verify', '--strict', `-R=${releaseRequirement}`, bundle], { stdio: 'inherit' });
         const designated = execFileSync('/usr/bin/codesign', ['-dr', '-', bundle], { encoding: 'utf8' });
-        assert.ok(
-            designated.toLowerCase().includes(releaseRequirement.toLowerCase()),
+        // codesign renders certificate hashes in lowercase. Preserve every
+        // predicate and identifier; a broader DR must never pass by substring.
+        const normalizeHex = requirement => requirement.replace(/H"([0-9a-fA-F]+)"/g, (_, hex) => `H"${hex.toUpperCase()}"`);
+        assert.equal(
+            normalizeHex(designated.trim()),
+            normalizeHex(`designated => ${releaseRequirement}`),
             'Published Mac app must use the stable certificate and app identifier requirement'
         );
         assert.doesNotMatch(designated, /\bcdhash\b/, 'Published Mac permission identity must not change with each build');

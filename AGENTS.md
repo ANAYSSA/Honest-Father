@@ -138,3 +138,5 @@ key exists only in the local release signer's macOS keychain. Never export that
 key to the repository, installers, tool output, or GitHub secrets.
 
 Build public Mac releases locally with `HONEST_FATHER_RELEASE_SIGNING=1 npm run make -- --platform=darwin --arch=arm64`, then run `node scripts/verify-mac-signing-stability.js`. Both deep signature validation and the certificate-bound designated requirement must pass. Publish those DMG/ZIP files and their checksums after both CI platform jobs succeed. CI automatically publishes Windows only. A signing identity change requires a new one-time macOS permission grant and must be documented.
+
+The optional `publish-macos-keyless.yml` workflow may reconstruct the locally signed app using public per-file binary patches and a separately pinned manifest SHA-256. It must verify the exact complete signed file tree, certificate-bound requirement, versions, and both finished archives before uploading. This workflow only creates archive containers; never rebuild, mutate, or re-sign the app in CI. Keep incomplete releases draft until Mac and Windows files are verified.

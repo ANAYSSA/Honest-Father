@@ -112,6 +112,8 @@ npm run make -- --platform=win32 --arch=x64
 
 Packages are written to `out/make`. The [build workflow](.github/workflows/build.yml) tests both platforms and automatically publishes Windows assets on a version tag. Its ad-hoc Mac build is a CI test artifact and is never uploaded to a public release. Mac releases are built on the release signer's Mac with `HONEST_FATHER_RELEASE_SIGNING=1 npm run make -- --platform=darwin --arch=arm64`, then checked with `node scripts/verify-mac-signing-stability.js`. Run `node scripts/collect-artifacts.js darwin arm64` and `node scripts/publish-macos.js v<version> <successful-build-run-id>` to upload the signed Mac files. The private signing key stays in the local macOS keychain; only its public certificate is checked into the repository. Packaging dependency versions are pinned in `package-lock.json`.
 
+For slow outbound connections, the optional [Mac publication workflow](.github/workflows/publish-macos-keyless.yml) restores the already signed app from the successful CI artifact and public per-file binary patches. It requires a SHA-256-pinned manifest of every target file, permission mode, and symlink, and verifies the persistent certificate before and after creating ZIP/DMG containers. It never signs code or receives the private key. Keep the release draft until both platform downloads have been verified.
+
 ## Capture and storage
 
 - **macOS:** ScreenCaptureKit system audio with a compiled `SystemAudioDump` helper; screen and microphone permissions are required for their respective capture modes. The helper outputs 24 kHz, signed 16-bit stereo PCM, which the app downmixes to mono before sending to AI.
