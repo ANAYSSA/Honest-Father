@@ -3,6 +3,7 @@ const { randomUUID } = require('node:crypto');
 const { mapReviewAnswerToDisplay } = require('./testReview');
 
 const UPDATE_CHANNEL = 'review-overlay:update';
+const BOUNDS_ERROR = 'The review overlay could not cover the captured display. Start a new session.';
 
 function copyDisplay(display) {
     if (
@@ -75,11 +76,31 @@ function createReviewOverlay({
         for (const remove of list.splice(0)) remove();
     };
 
+    function restoreDisplayBounds() {
+        if (!selectedDisplay || !overlayWindow || overlayWindow.isDestroyed()) return;
+        const bounds = overlayWindow.getBounds();
+        if (['x', 'y', 'width', 'height'].every(key => bounds[key] === selectedDisplay.bounds[key])) return;
+        // Windows can fit constructor bounds to the work area, excluding the
+        // taskbar. The annotation coordinate system covers the entire display.
+        overlayWindow.setBounds({ ...selectedDisplay.bounds }, false);
+        const restored = overlayWindow.getBounds();
+        if (!['x', 'y', 'width', 'height'].every(key => restored[key] === selectedDisplay.bounds[key])) throw new Error(BOUNDS_ERROR);
+    }
+
     function flushUpdate() {
-        if (!overlayWindow || overlayWindow.isDestroyed() || !overlayReady) return;
+        if (!overlayWindow || overlayWindow.isDestroyed() || !overlayReady) return true;
+        if (desiredVisible) {
+            try {
+                restoreDisplayBounds();
+            } catch (error) {
+                endUnexpectedly(error.message);
+                return false;
+            }
+        }
         overlayWindow.webContents.send(UPDATE_CHANNEL, pendingUpdate);
         if (desiredVisible) overlayWindow.showInactive();
         else overlayWindow.hide();
+        return true;
     }
 
     function hideOverlay() {
@@ -180,6 +201,12 @@ function createReviewOverlay({
             () => {
                 if (!active || !overlayWindow || overlayWindow.isDestroyed()) return;
                 overlayReady = true;
+                try {
+                    restoreDisplayBounds();
+                } catch (error) {
+                    endUnexpectedly(error.message);
+                    return;
+                }
                 onWindowCreated(overlayWindow);
                 flushUpdate();
             },
@@ -199,6 +226,7 @@ function createReviewOverlay({
         );
         listen(overlayWindow, 'closed', () => endUnexpectedly('The review overlay closed. Start a new session.'), overlayListeners);
         const createdOverlay = overlayWindow;
+        restoreDisplayBounds();
         onWindowCreated(createdOverlay);
         const load = overlayWindow.loadFile(path.join(__dirname, '../review-overlay.html'));
         if (load && typeof load.catch === 'function') {
@@ -321,6 +349,7 @@ function createReviewOverlay({
                 mapped,
                 normalizedAnswer,
                 dimensions: { ...dimensions },
+                locationValid: false,
             };
             userWantsAnswerVisible = true;
             rememberAnswer(cachedAnswer);
@@ -392,15 +421,17 @@ function createReviewOverlay({
             const moved = moveAnswer(token, offset);
             if (!moved.success) return moved;
         }
+        if (!cachedAnswer.locationValid) return failure('The question is no longer visible. Scroll back or capture it again.');
         pendingUpdate = { kind: 'answer', ...cachedAnswer.mapped };
         userWantsAnswerVisible = true;
         desiredVisible = true;
-        flushUpdate();
+        if (!flushUpdate()) return failure(BOUNDS_ERROR);
         return { success: true, visible: true };
     }
 
     function hideAnswer(token) {
         if (!cachedAnswer || !matchesToken(token)) return failure('This review capture is no longer current.');
+        cachedAnswer.locationValid = false;
         hideOverlay();
         return { success: true };
     }
@@ -412,9 +443,10 @@ function createReviewOverlay({
         try {
             const shifted = shiftAnswer(cachedAnswer.normalizedAnswer, offset);
             cachedAnswer.mapped = mapReviewAnswerToDisplay(shifted, selectedDisplay.bounds);
+            cachedAnswer.locationValid = true;
             pendingUpdate = { kind: 'answer', ...cachedAnswer.mapped };
             desiredVisible = userWantsAnswerVisible;
-            flushUpdate();
+            if (!flushUpdate()) return failure(BOUNDS_ERROR);
             return { success: true, visible: desiredVisible };
         } catch (error) {
             hideAnswer(token);
@@ -437,7 +469,7 @@ function createReviewOverlay({
         if (typeof text !== 'string' || !text.trim() || text.length > 500) return failure('The review notice is invalid.');
         pendingUpdate = { kind: 'status', text: text.replace(/[\u0000-\u001f\u007f]/g, ' ').trim() };
         desiredVisible = true;
-        flushUpdate();
+        if (!flushUpdate()) return failure(BOUNDS_ERROR);
         return { success: true };
     }
 
@@ -455,8 +487,8 @@ function createReviewOverlay({
             return { success: true, visible: mainWindow.isVisible() };
         }
         mainWindow.hide();
-        if (userWantsAnswerVisible) {
-            userWantsAnswerVisible = false;
+        userWantsAnswerVisible = !userWantsAnswerVisible;
+        if (!cachedAnswer.locationValid || !userWantsAnswerVisible) {
             hideOverlay();
             return { success: true, visible: false };
         }

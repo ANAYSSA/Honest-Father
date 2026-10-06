@@ -13,12 +13,15 @@ function makeAnswer() {
     );
 }
 
-function makeHarness(platform = 'darwin') {
+function makeHarness(platform = 'darwin', { clampConstructor = false } = {}) {
     const windows = [];
     class FakeWindow extends EventEmitter {
         constructor(options) {
             super();
             this.options = options;
+            this.bounds = { x: options.x, y: options.y, width: options.width, height: options.height };
+            if (clampConstructor && typeof this.bounds.height === 'number') this.bounds.height -= 48;
+            this.initialBounds = { ...this.bounds };
             this.visible = false;
             this.destroyed = false;
             this.calls = [];
@@ -33,6 +36,13 @@ function makeHarness(platform = 'darwin') {
         }
         isVisible() {
             return this.visible;
+        }
+        getBounds() {
+            return { ...this.bounds };
+        }
+        setBounds(bounds, animate) {
+            this.calls.push(['setBounds', { ...bounds }, animate]);
+            if (!this.refuseBounds) this.bounds = { ...bounds };
         }
         hide() {
             this.visible = false;
@@ -162,11 +172,81 @@ test('overlay occupies the actual capture display including negative origin and 
     assert.equal(prevented, true);
 });
 
+test('Windows constructor work-area clamping is corrected to the complete captured display before load and every reveal', () => {
+    const harness = makeHarness('win32', { clampConstructor: true });
+    const expectedBounds = { x: 0, y: 0, width: 1024, height: 768 };
+    harness.displays[1].bounds = { ...expectedBounds };
+    harness.displays[1].scaleFactor = 1;
+    harness.dimensions = { imageWidth: 1024, imageHeight: 768 };
+    const window = harness.start();
+    assert.equal(window.initialBounds.height, 720);
+    assert.deepEqual(window.getBounds(), expectedBounds);
+    assert.deepEqual(
+        window.calls.find(call => call[0] === 'setBounds'),
+        ['setBounds', expectedBounds, false]
+    );
+    window.bounds.height = 720;
+    window.ready();
+    assert.deepEqual(window.getBounds(), expectedBounds);
+    const token = harness.answer();
+    window.bounds.height = 720;
+    assert.equal(harness.manager.showAnswer(token, { x: 0, y: 0 }).success, true);
+    assert.equal(window.isVisible(), true);
+    assert.deepEqual(window.getBounds(), expectedBounds);
+    assert.equal(window.calls.filter(call => call[0] === 'setBounds').length, 3);
+    const control = window.webContents.messages.at(-1).payload.answers[0].box;
+    assert.equal(control.x, 307.2);
+    assert.ok(Math.abs(control.y - 230.4) < 1e-9);
+    assert.equal(control.width, 20.48);
+    assert.equal(control.height, 15.36);
+    harness.manager.toggle();
+    assert.equal(window.isVisible(), false);
+    harness.manager.moveAnswer(token, { x: 0, y: 0 });
+    assert.equal(window.isVisible(), false);
+});
+
+test('working macOS full-display bounds do not receive an unnecessary native reposition', () => {
+    const harness = makeHarness('darwin');
+    const window = harness.start();
+    window.ready();
+    const token = harness.answer();
+    harness.manager.showAnswer(token, { x: 0, y: 0 });
+    assert.deepEqual(window.getBounds(), harness.displays[1].bounds);
+    assert.equal(
+        window.calls.some(call => call[0] === 'setBounds'),
+        false
+    );
+});
+
+test('native bounds that remain clamped prevent drawing and end review after a single restoration attempt', () => {
+    const harness = makeHarness('win32');
+    const window = harness.start();
+    window.ready();
+    const token = harness.answer();
+    window.bounds.height -= 48;
+    window.refuseBounds = true;
+    const before = window.calls.filter(call => call[0] === 'setBounds').length;
+    const result = harness.manager.showAnswer(token, { x: 0, y: 0 });
+    assert.equal(result.success, false);
+    assert.match(result.error, /could not cover the captured display/);
+    assert.equal(window.calls.filter(call => call[0] === 'setBounds').length, before + 1);
+    assert.equal(
+        window.webContents.messages.some(message => message.payload.kind === 'answer'),
+        false
+    );
+    assert.equal(window.isVisible(), false);
+    assert.equal(window.isDestroyed(), true);
+    assert.equal(harness.manager.isActive(), false);
+    assert.equal(harness.mainWindow.isVisible(), true);
+    assert.equal(harness.endings.length, 1);
+    assert.match(harness.endings[0].reason, /could not cover the captured display/);
+});
+
 test('cached backend answer survives preload readiness and maps exactly once to local Retina DIP', () => {
     const harness = makeHarness();
     const window = harness.start();
     const token = harness.answer();
-    assert.equal(harness.manager.showAnswer(token).success, true);
+    assert.equal(harness.manager.showAnswer(token, { x: 0, y: 0 }).success, true);
     assert.equal(window.isVisible(), false);
     assert.equal(window.webContents.messages.length, 0);
     window.ready();
@@ -183,7 +263,7 @@ test('host can restore its activation policy both after overlay creation and bef
     const window = harness.start();
     assert.deepEqual(harness.createdCallbacks, [window]);
     const token = harness.answer();
-    harness.manager.showAnswer(token);
+    harness.manager.showAnswer(token, { x: 0, y: 0 });
     assert.equal(window.isVisible(), false);
     window.ready();
     assert.deepEqual(harness.createdCallbacks, [window, window]);
@@ -195,7 +275,7 @@ test('new captures hide notices and main UI, invalidate old responses, and copy 
     const window = harness.start();
     window.ready();
     const oldToken = harness.answer();
-    harness.manager.showAnswer(oldToken);
+    harness.manager.showAnswer(oldToken, { x: 0, y: 0 });
     harness.manager.status('Try capturing a complete question.');
     assert.equal(window.isVisible(), true);
     assert.equal(window.webContents.messages.at(-1).payload.kind, 'status');
@@ -207,7 +287,7 @@ test('new captures hide notices and main UI, invalidate old responses, and copy 
     assert.equal(harness.mainWindow.isVisible(), false);
     assert.equal(window.webContents.messages.at(-1).payload.kind, 'clear');
     assert.equal(harness.manager.cacheAnswer(oldToken, makeAnswer(), harness.dimensions).success, false);
-    assert.equal(harness.manager.showAnswer(oldToken).success, false);
+    assert.equal(harness.manager.showAnswer(oldToken, { x: 0, y: 0 }).success, false);
     token.display.bounds.x = 500;
     assert.equal(harness.manager.validateCapture(token, harness.dimensions).success, false);
 });
@@ -237,13 +317,13 @@ test('clear accepts only its own current request and prevents any later response
     window.ready();
     const stale = harness.answer();
     const current = harness.answer();
-    harness.manager.showAnswer(current);
+    harness.manager.showAnswer(current, { x: 0, y: 0 });
     assert.equal(harness.manager.clear(stale).success, false);
     assert.equal(window.isVisible(), true);
     assert.equal(harness.manager.clear(current).success, true);
     assert.equal(window.isVisible(), false);
     assert.equal(harness.manager.cacheAnswer(current, makeAnswer(), harness.dimensions).success, false);
-    assert.equal(harness.manager.showAnswer(current).success, false);
+    assert.equal(harness.manager.showAnswer(current, { x: 0, y: 0 }).success, false);
 });
 
 test('show/hide toggles cached circles while keeping the main application hidden', () => {
@@ -251,7 +331,7 @@ test('show/hide toggles cached circles while keeping the main application hidden
     const window = harness.start();
     window.ready();
     const token = harness.answer();
-    harness.manager.showAnswer(token);
+    harness.manager.showAnswer(token, { x: 0, y: 0 });
     assert.deepEqual(harness.manager.toggle(), { success: true, visible: false });
     assert.equal(window.isVisible(), false);
     assert.equal(harness.mainWindow.isVisible(), false);
@@ -282,7 +362,7 @@ test('local tracking moves from the original normalized answer and preserves man
     const window = harness.start();
     window.ready();
     const token = harness.answer();
-    harness.manager.showAnswer(token);
+    harness.manager.showAnswer(token, { x: 0, y: 0 });
     assert.equal(harness.manager.moveAnswer(token, { x: 10, y: -50 }).success, true);
     assert.deepEqual(window.webContents.messages.at(-1).payload.answers[0].box, { x: 446.4, y: 225, width: 28.8, height: 18 });
     assert.equal(harness.manager.moveAnswer(token, { x: 0, y: 0 }).success, true);
@@ -305,7 +385,7 @@ test('tracking rejects invalid, clipped, or stale offsets but retains its snapsh
     const window = harness.start();
     window.ready();
     const token = harness.answer();
-    harness.manager.showAnswer(token);
+    harness.manager.showAnswer(token, { x: 0, y: 0 });
     for (const offset of [null, { x: NaN, y: 0 }, { x: 0, y: -101 }, { x: 1001, y: 0 }]) {
         assert.equal(harness.manager.moveAnswer(token, offset).success, false);
         assert.equal(window.isVisible(), false);
@@ -316,6 +396,67 @@ test('tracking rejects invalid, clipped, or stale offsets but retains its snapsh
     assert.equal(harness.manager.hideAnswer(token).success, false);
     assert.equal(harness.manager.moveAnswer(token, { x: 0, y: 0 }).success, false);
     assert.equal(harness.manager.validateCapture(current, harness.dimensions).success, true);
+});
+
+test('a fresh or reused backend answer cannot be drawn without a current verified location', () => {
+    const harness = makeHarness();
+    const window = harness.start();
+    window.ready();
+    const token = harness.answer();
+    assert.equal(harness.manager.showAnswer(token).success, false);
+    harness.manager.toggle();
+    harness.manager.toggle();
+    assert.equal(window.isVisible(), false);
+    assert.equal(
+        window.webContents.messages.some(message => message.payload.kind === 'answer'),
+        false
+    );
+    assert.equal(harness.manager.showAnswer(token, { x: 0, y: 0 }).success, true);
+    assert.equal(window.isVisible(), true);
+    const current = harness.manager.prepareCapture();
+    assert.equal(harness.manager.reuseAnswer(current, token, { x: 0, y: 0 }).success, true);
+    assert.equal(harness.manager.showAnswer(current).success, false);
+    assert.equal(window.isVisible(), false);
+});
+
+test('visibility toggles cannot resurrect stale rings while tracking is lost and a later match respects their preference', () => {
+    const harness = makeHarness();
+    const window = harness.start();
+    window.ready();
+    const token = harness.answer();
+    harness.manager.showAnswer(token, { x: 0, y: 0 });
+    harness.manager.hideAnswer(token);
+    const messages = window.webContents.messages.length;
+    assert.equal(harness.manager.toggle().visible, false);
+    assert.equal(harness.manager.toggle().visible, false);
+    assert.equal(window.isVisible(), false);
+    assert.equal(harness.manager.showAnswer(token).success, false);
+    assert.equal(
+        window.webContents.messages.slice(messages).some(message => message.payload.kind === 'answer' || message.payload.kind === 'status'),
+        false
+    );
+    assert.equal(harness.manager.moveAnswer(token, { x: 0, y: -20 }).visible, true);
+    harness.manager.hideAnswer(token);
+    harness.manager.toggle();
+    assert.equal(harness.manager.moveAnswer(token, { x: 0, y: -10 }).visible, false);
+    assert.equal(window.isVisible(), false);
+    assert.equal(harness.manager.toggle().visible, true);
+    assert.equal(window.isVisible(), true);
+});
+
+test('an invalid local move revokes the location so toggles cannot redraw its previous position', () => {
+    const harness = makeHarness();
+    const window = harness.start();
+    window.ready();
+    const token = harness.answer();
+    harness.manager.showAnswer(token, { x: 0, y: 0 });
+    assert.equal(harness.manager.moveAnswer(token, { x: 0, y: -101 }).success, false);
+    harness.manager.toggle();
+    harness.manager.toggle();
+    assert.equal(window.isVisible(), false);
+    assert.equal(harness.manager.showAnswer(token).success, false);
+    assert.equal(harness.manager.moveAnswer(token, { x: 0, y: 0 }).success, true);
+    assert.equal(window.isVisible(), true);
 });
 
 test('an initially offscreen answer becomes visible on a safe local match without another show call', () => {
@@ -362,7 +503,7 @@ test('three saved backend answers survive clear/new captures and reuse rebases o
     assert.deepEqual(reused.reviewAnswer.questionBox, [50, 110, 850, 910]);
     assert.deepEqual(reused.reviewAnswer.answers[0].box, [250, 310, 270, 330]);
     reused.reviewAnswer.answers[0].box[0] = -999;
-    assert.equal(harness.manager.showAnswer(current).success, true);
+    assert.equal(harness.manager.showAnswer(current, { x: 0, y: 0 }).success, true);
     const next = harness.manager.prepareCapture();
     assert.equal(harness.manager.reuseAnswer(next, tokens[2], { x: 0, y: 0 }).success, true);
     const another = harness.manager.prepareCapture();
@@ -379,11 +520,11 @@ test('history reuse refuses forged display tokens and clipped offsets, leaving t
     window.ready();
     const source = harness.answer();
     const current = harness.answer();
-    harness.manager.showAnswer(current);
+    harness.manager.showAnswer(current, { x: 0, y: 0 });
     const forged = { ...source, display: { ...source.display, scaleFactor: 1 } };
     assert.equal(harness.manager.reuseAnswer(current, forged, { x: 0, y: 0 }).success, false);
     assert.equal(harness.manager.reuseAnswer(current, source, { x: 0, y: -101 }).success, false);
-    assert.equal(harness.manager.showAnswer(current).success, true);
+    assert.equal(harness.manager.showAnswer(current, { x: 0, y: 0 }).success, true);
     assert.equal(window.isVisible(), true);
 });
 
@@ -392,7 +533,7 @@ test('clearing an empty status preserves the current answer and user visibility 
     const window = harness.start();
     window.ready();
     const token = harness.answer();
-    harness.manager.showAnswer(token);
+    harness.manager.showAnswer(token, { x: 0, y: 0 });
     assert.equal(harness.manager.status('').success, true);
     assert.equal(window.isVisible(), true);
     harness.manager.toggle();
@@ -410,7 +551,7 @@ test('a busy notice arriving after backend completion cannot delete the cached a
     assert.equal(harness.manager.status('A screenshot is already being processed. Wait for the response.').success, true);
     assert.equal(window.webContents.messages.at(-1).payload.kind, 'status');
     assert.equal(harness.manager.status('').success, true);
-    assert.equal(harness.manager.showAnswer(token).success, true);
+    assert.equal(harness.manager.showAnswer(token, { x: 0, y: 0 }).success, true);
     harness.manager.toggle();
     assert.equal(window.isVisible(), false);
     assert.equal(harness.manager.status('Busy.').success, true);

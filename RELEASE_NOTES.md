@@ -6,7 +6,7 @@
 
 Honest Father is an open-source assistant for mock interviews, exam preparation, and learning, forked from Cheating Daddy.
 
-## New in 0.10.0
+## New in 0.10.1
 
 - Two start buttons: **Start Session** for the existing flow and **Start Test Review** for multiple-choice practice.
 - Test Review circles the proposed correct radio button or checkbox on screen. Command+Enter / Ctrl+Enter captures a question; Command+Backslash / Ctrl+Backslash hides or shows its marks. It does not click or submit answers.

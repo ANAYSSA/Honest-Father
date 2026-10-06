@@ -477,7 +477,7 @@ function startReviewWatchdog(guard) {
         } else if (!guard.hidden) {
             guard.hidden = true;
             ipcRenderer.invoke('review:hide-answer', guard.token).catch(console.error);
-            cheatingDaddy.setStatus('Question is off screen. Scroll back or capture a new question.');
+            cheatingDaddy.setStatus('Question is off screen or no longer matches. Scroll back or capture a new question.');
         }
     }, 500);
 }
@@ -634,7 +634,7 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false, prom
         cheatingDaddy.setStatus(
             testReview
                 ? reviewFrameGuard?.hidden
-                    ? 'Question is off screen. Scroll back or capture a new question.'
+                    ? 'Question is off screen or no longer matches. Scroll back or capture a new question.'
                     : 'Test Review ready'
                 : captureScreenOnly
                   ? 'Screen ready'
