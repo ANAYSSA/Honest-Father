@@ -213,6 +213,38 @@ ipcRenderer.on('update-status', (event, status) => {
     cheatingDaddy.setStatus(status);
 });
 
+function explainMacScreenCaptureFailure(error, diagnostics) {
+    const invalidCapture = /^Invalid capture constraints\.?$/i.test(error?.message?.trim() || '');
+    const captureFailure =
+        invalidCapture || ['AbortError', 'NotAllowedError', 'PermissionDeniedError', 'NotReadableError', 'NotFoundError'].includes(error?.name);
+    if (!captureFailure) return error;
+
+    const permissionStatus = diagnostics?.permissionStatus;
+    const failure = diagnostics?.failure;
+    const failureAge = typeof failure?.at === 'number' ? Date.now() - failure.at : Infinity;
+    const sourceError =
+        failureAge >= 0 && failureAge <= 10000 && typeof failure?.error === 'string'
+            ? failure.error
+                  .replace(/[\u0000-\u001f\u007f]/g, ' ')
+                  .trim()
+                  .slice(0, 512)
+            : '';
+    const permissionHelp = 'Allow Honest Father in System Settings > Privacy & Security > Screen & System Audio Recording, then restart the app.';
+
+    if (['denied', 'restricted'].includes(permissionStatus)) return new Error(permissionHelp);
+    if (permissionStatus === 'granted' && (sourceError || error?.name === 'AbortError')) {
+        return new Error(
+            'macOS could not start screen capture even though Screen Recording permission is enabled. ' +
+                (sourceError ? `Capture source: ${sourceError}. ` : '') +
+                'In System Settings > Privacy & Security > Screen & System Audio Recording, remove Honest Father, add the installed app again, then restart it.'
+        );
+    }
+    if (sourceError) return new Error(`macOS could not provide the screen stream. Capture source: ${sourceError}. Restart the app and try again.`);
+    if (permissionStatus !== 'granted' && ['NotAllowedError', 'PermissionDeniedError'].includes(error?.name)) return new Error(permissionHelp);
+    if (invalidCapture) return new Error('macOS could not provide the screen stream. Restart Honest Father and try screen capture again.');
+    return error;
+}
+
 async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'medium', screenOnly = false, testReview = false) {
     stopCapture();
     const generation = captureGeneration;
@@ -230,7 +262,7 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
         let stream;
         try {
             stream = await navigator.mediaDevices.getDisplayMedia({
-                video: { frameRate: testReview ? 5 : 1, width: { ideal: 2560 }, height: { ideal: 1600 } },
+                video: true,
                 audio:
                     captureSystem && !isMacOS
                         ? {
@@ -243,10 +275,15 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
                         : false,
             });
         } catch (error) {
-            if (isMacOS && ['NotAllowedError', 'PermissionDeniedError'].includes(error.name)) {
-                throw new Error(
-                    'Allow Honest Father in System Settings > Privacy & Security > Screen & System Audio Recording, then restart the app.'
-                );
+            if (isMacOS) {
+                let diagnostics;
+                try {
+                    diagnostics = await ipcRenderer.invoke('screen-capture:diagnostics');
+                } catch (diagnosticError) {
+                    console.warn('Screen capture diagnostics were unavailable:', diagnosticError?.message || String(diagnosticError));
+                }
+                if (generation !== captureGeneration) return false;
+                throw explainMacScreenCaptureFailure(error, diagnostics);
             }
             throw error;
         }
@@ -264,6 +301,38 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
                 }
             })
         );
+
+        // Native capture chooses the full display dimensions. Rate tuning is optional
+        // and happens afterward so unsupported constraints cannot block screen sharing.
+        const desiredFrameRate = testReview ? 5 : 1;
+        for (const track of stream.getVideoTracks()) {
+            if (generation !== captureGeneration) {
+                stream.getTracks().forEach(item => item.stop());
+                return false;
+            }
+            if (typeof track.applyConstraints !== 'function') {
+                console.warn('The shared screen does not support frame-rate constraints; using its native rate.');
+                continue;
+            }
+            try {
+                await track.applyConstraints({ frameRate: { ideal: desiredFrameRate, max: desiredFrameRate } });
+            } catch (error) {
+                if (generation === captureGeneration) {
+                    console.warn(
+                        'The shared screen could not apply the preferred frame rate; using its native rate:',
+                        error?.message || String(error)
+                    );
+                }
+            }
+            if (generation !== captureGeneration) {
+                stream.getTracks().forEach(track => track.stop());
+                return false;
+            }
+        }
+        if (generation !== captureGeneration) {
+            stream.getTracks().forEach(track => track.stop());
+            return false;
+        }
 
         if (captureSystem && isMacOS) {
             const result = await ipcRenderer.invoke('start-macos-audio');

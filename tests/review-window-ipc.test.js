@@ -5,13 +5,14 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 
-function harness() {
+function harness({ platform = 'win32', permissionStatus = 'unknown', permissionThrows = false } = {}) {
     const handlers = new Map();
     const calls = [];
     const ipcMain = new EventEmitter();
     ipcMain.handle = (channel, handler) => handlers.set(channel, handler);
     ipcMain.removeHandler = channel => handlers.delete(channel);
     const sessionRef = { current: null };
+    const failure = { code: 'source_enumeration_failed', error: 'Failed to get sources.', stage: 'sources', at: Date.now() };
     let active = false;
     const overlay = {
         isActive: () => active,
@@ -56,6 +57,7 @@ function harness() {
         setVisibleOnAllWorkspaces() {}
         setAlwaysOnTop() {}
         setSkipTaskbar() {}
+        setHiddenInMissionControl() {}
         loadFile() {}
     }
     let actions;
@@ -63,7 +65,7 @@ function harness() {
     vm.runInNewContext(fs.readFileSync(path.resolve(__dirname, '../src/utils/window.js'), 'utf8'), {
         module,
         __dirname: path.resolve(__dirname, '../src/utils'),
-        process: { platform: 'win32' },
+        process: { platform },
         console,
         require(name) {
             if (name === 'node:path') return path;
@@ -76,9 +78,16 @@ function harness() {
                     screen: { getPrimaryDisplay: () => ({ workAreaSize: { width: 1920, height: 1080 } }) },
                     session: { defaultSession: {} },
                     desktopCapturer: {},
+                    systemPreferences: {
+                        getMediaAccessStatus(type) {
+                            assert.equal(type, 'screen');
+                            if (permissionThrows) throw new Error('Unavailable');
+                            return permissionStatus;
+                        },
+                    },
                 };
             if (name === '../storage') return { getKeybinds: () => null };
-            if (name === './screenCapture') return { registerAutomaticScreenCapture() {} };
+            if (name === './screenCapture') return { registerAutomaticScreenCapture: () => ({ getLastFailure: () => ({ ...failure }) }) };
             if (name === './reviewOverlay') return { createReviewOverlay: () => overlay };
             if (name === './keybinds')
                 return {
@@ -143,4 +152,24 @@ test('closing an ordinary screen window does not invoke the review shutdown path
     h.window.emit('closed');
     assert.deepEqual(h.calls, ['end']);
     assert.equal(h.handlers.size, 0);
+});
+
+test('capture diagnostics report the original source failure and live macOS permission status only to the main frame', () => {
+    const h = harness({ platform: 'darwin', permissionStatus: 'granted' });
+    const handler = h.handlers.get('screen-capture:diagnostics');
+    for (const event of [{ sender: {} }, { sender: h.window.webContents, senderFrame: {} }]) {
+        assert.equal(handler(event).success, false);
+    }
+    const result = handler(h.trusted);
+    assert.equal(result.permissionStatus, 'granted');
+    assert.equal(result.failure.error, 'Failed to get sources.');
+    assert.equal(result.failure.code, 'source_enumeration_failed');
+    assert.equal(result.failure.stage, 'sources');
+});
+
+test('unavailable permission status and Windows diagnostics do not claim a macOS denial', () => {
+    for (const options of [{ platform: 'win32' }, { platform: 'darwin', permissionThrows: true }]) {
+        const h = harness(options);
+        assert.equal(h.handlers.get('screen-capture:diagnostics')(h.trusted).permissionStatus, 'unknown');
+    }
 });

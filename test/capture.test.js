@@ -11,6 +11,9 @@ function makeStream(audio = false) {
             this.stopped = true;
         },
         addEventListener() {},
+        async applyConstraints(constraints) {
+            this.constraints = constraints;
+        },
     };
     const audioTrack = {
         stopped: false,
@@ -42,6 +45,7 @@ function loadRenderer({
     const listeners = new Map();
     const calls = [];
     const contexts = [];
+    const warnings = [];
     const app = {
         status: '',
         responses: [],
@@ -114,7 +118,7 @@ function loadRenderer({
         AudioContext,
         navigator: { mediaDevices },
         document: { querySelector: () => app, readyState: 'loading', addEventListener() {}, createElement },
-        console: { log() {}, warn() {}, error() {} },
+        console: { log() {}, warn: (...args) => warnings.push(args), error() {} },
         setInterval: intervalTimers?.setInterval || setInterval,
         clearInterval: intervalTimers?.clearInterval || clearInterval,
         setTimeout,
@@ -126,7 +130,7 @@ function loadRenderer({
         btoa: value => Buffer.from(value, 'binary').toString('base64'),
     });
     vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/utils/renderer.js'), 'utf8'), context);
-    return { api: window.cheatingDaddy, screenshot: window.captureManualScreenshot, listeners, calls, contexts, app };
+    return { api: window.cheatingDaddy, screenshot: window.captureManualScreenshot, listeners, calls, contexts, warnings, app };
 }
 
 test('microphone only on macOS skips native system capture and releases every resource', async () => {
@@ -177,6 +181,154 @@ test('macOS Screen Recording denial explains the real OS permission and does not
         false
     );
     assert.equal(harness.contexts.length, 0);
+});
+
+function failingScreenCapture({ name = 'AbortError', message = 'Invalid capture constraints', diagnostics, platform = 'darwin' } = {}) {
+    let acquisitions = 0;
+    const harness = loadRenderer({
+        platform,
+        mediaDevices: {
+            async getDisplayMedia() {
+                acquisitions += 1;
+                const error = new Error(message);
+                error.name = name;
+                throw error;
+            },
+            getUserMedia() {
+                assert.fail('A failed screen request must not open audio capture');
+            },
+        },
+        invokeOverride(channel) {
+            if (channel === 'screen-capture:diagnostics' && diagnostics instanceof Error) return Promise.reject(diagnostics);
+            if (channel === 'screen-capture:diagnostics') return diagnostics;
+        },
+    });
+    return { ...harness, acquisitions: () => acquisitions };
+}
+
+for (const permissionStatus of ['denied', 'restricted']) {
+    test(`macOS native capture rejection with ${permissionStatus} permission gives permission help without reacquiring`, async () => {
+        const harness = failingScreenCapture({ diagnostics: { permissionStatus, failure: null } });
+        assert.equal(await harness.api.startCapture(5, 'medium', true, true), false);
+        assert.match(harness.app.status, /Allow Honest Father.*Screen & System Audio Recording.*restart/);
+        assert.doesNotMatch(harness.app.status, /permission is enabled|Invalid capture constraints/);
+        assert.equal(harness.acquisitions(), 1);
+        assert.equal(
+            harness.calls.some(call => call.channel === 'review:begin' || call.channel === 'start-macos-audio'),
+            false
+        );
+    });
+}
+
+test('macOS AbortError with granted permission explains native capture failure and re-adding the installed app', async () => {
+    const harness = failingScreenCapture({ diagnostics: { permissionStatus: 'granted', failure: null } });
+    assert.equal(await harness.api.startCapture(5, 'medium', true, true), false);
+    assert.match(harness.app.status, /could not start screen capture even though Screen Recording permission is enabled/);
+    assert.match(harness.app.status, /remove Honest Father, add the installed app again, then restart/);
+    assert.doesNotMatch(harness.app.status, /Allow Honest Father|Invalid capture constraints/);
+    assert.equal(harness.acquisitions(), 1);
+});
+
+test('fresh native source diagnostics are normalized and included without misreporting granted permission', async () => {
+    const harness = failingScreenCapture({
+        name: 'NotReadableError',
+        message: 'The native screen stream could not start',
+        diagnostics: {
+            permissionStatus: 'granted',
+            failure: { code: 'source_enumeration', error: 'No available\n screen\u0000 source', stage: 'enumeration', at: Date.now() },
+        },
+    });
+    assert.equal(await harness.api.startCapture(5, 'medium', true), false);
+    assert.match(harness.app.status, /Capture source: No available  screen  source/);
+    assert.match(harness.app.status, /permission is enabled/);
+    assert.doesNotMatch(harness.app.status, /\u0000|\n/);
+    assert.equal(harness.acquisitions(), 1);
+});
+
+for (const age of ['expired', 'future']) {
+    test(`${age} source diagnostics do not replace an unrelated current native capture error`, async () => {
+        const harness = failingScreenCapture({
+            name: 'NotReadableError',
+            message: 'Current native device failure',
+            diagnostics: {
+                permissionStatus: 'granted',
+                failure: {
+                    code: 'source_enumeration',
+                    error: 'OLD SOURCE ERROR',
+                    stage: 'enumeration',
+                    at: Date.now() + (age === 'expired' ? -11000 : 60000),
+                },
+            },
+        });
+        assert.equal(await harness.api.startCapture(5, 'medium', true), false);
+        assert.match(harness.app.status, /Current native device failure/);
+        assert.doesNotMatch(harness.app.status, /OLD SOURCE ERROR|remove Honest Father|Allow Honest Father/);
+        assert.equal(harness.acquisitions(), 1);
+    });
+}
+
+for (const name of ['TypeError', 'InvalidStateError']) {
+    test(`${name} is preserved instead of being replaced with OS permission advice`, async () => {
+        const harness = failingScreenCapture({
+            name,
+            message: 'Current request must run from an active browser context',
+            diagnostics: {
+                permissionStatus: 'denied',
+                failure: { code: 'source_enumeration', error: 'Irrelevant source diagnostic', stage: 'enumeration', at: Date.now() },
+            },
+        });
+        assert.equal(await harness.api.startCapture(5, 'medium', true), false);
+        assert.match(harness.app.status, /Current request must run from an active browser context/);
+        assert.doesNotMatch(harness.app.status, /Allow Honest Father|Irrelevant source diagnostic|remove Honest Father/);
+        assert.equal(harness.acquisitions(), 1);
+    });
+}
+
+test('missing or unavailable diagnostics translate the callback rejection without blaming illegal constraints', async () => {
+    for (const diagnostics of [undefined, new Error('The diagnostic IPC is unavailable')]) {
+        const harness = failingScreenCapture({ diagnostics });
+        assert.equal(await harness.api.startCapture(5, 'medium', true), false);
+        assert.match(harness.app.status, /macOS could not provide the screen stream/);
+        assert.doesNotMatch(harness.app.status, /Invalid capture constraints|Allow Honest Father/);
+        assert.equal(harness.acquisitions(), 1);
+    }
+});
+
+test('stopping capture while diagnostic IPC is pending suppresses late failure advice and review startup', async () => {
+    let resolveDiagnostics;
+    const harness = loadRenderer({
+        mediaDevices: {
+            async getDisplayMedia() {
+                const error = new Error('Invalid capture constraints');
+                error.name = 'AbortError';
+                throw error;
+            },
+        },
+        invokeOverride(channel) {
+            if (channel === 'screen-capture:diagnostics') return new Promise(resolve => (resolveDiagnostics = resolve));
+        },
+    });
+    const start = harness.api.startCapture(5, 'medium', true, true);
+    while (!resolveDiagnostics) await new Promise(resolve => setImmediate(resolve));
+    harness.api.stopCapture();
+    resolveDiagnostics({ permissionStatus: 'granted', failure: null });
+    assert.equal(await start, false);
+    assert.equal(harness.app.status, '');
+    assert.equal(
+        harness.calls.some(call => call.channel === 'review:begin'),
+        false
+    );
+});
+
+test('Windows capture failures preserve their original reason without consulting macOS diagnostic IPC', async () => {
+    const harness = failingScreenCapture({ platform: 'win32', message: 'The Windows screen source is unavailable' });
+    assert.equal(await harness.api.startCapture(5, 'medium', true), false);
+    assert.match(harness.app.status, /The Windows screen source is unavailable/);
+    assert.equal(
+        harness.calls.some(call => call.channel === 'screen-capture:diagnostics'),
+        false
+    );
+    assert.equal(harness.acquisitions(), 1);
 });
 
 test('Windows dual capture closes both streams and both audio contexts after provider failure', async () => {
@@ -258,12 +410,13 @@ test('failed Gemini initialization returns false and preserves the actionable ma
 
 test('Windows microphone only does not request loopback audio', async () => {
     let options;
+    const screen = makeStream();
     const harness = loadRenderer({
         platform: 'win32',
         mediaDevices: {
             async getDisplayMedia(value) {
                 options = value;
-                return makeStream();
+                return screen;
             },
             async getUserMedia() {
                 return makeStream(true);
@@ -272,7 +425,152 @@ test('Windows microphone only does not request loopback audio', async () => {
     });
     assert.equal(await harness.api.startCapture(), true);
     assert.equal(options.audio, false);
-    assert.equal(options.video.frameRate, 1);
+    assert.equal(options.video, true);
+    assert.deepEqual(JSON.parse(JSON.stringify(screen.videoTrack.constraints)), { frameRate: { ideal: 1, max: 1 } });
+    harness.api.stopCapture();
+});
+
+for (const platform of ['darwin', 'win32']) {
+    for (const testReview of [false, true]) {
+        for (const mode of ['mic_only', 'speaker_only', 'both']) {
+            test(`${platform} ${testReview ? 'review' : 'ordinary'} ${mode} acquires native display dimensions and tunes only the video rate`, async () => {
+                const events = [];
+                const screen = makeStream(platform === 'win32' && mode !== 'mic_only' && !testReview);
+                const mic = makeStream(true);
+                let options;
+                screen.videoTrack.applyConstraints = async constraints => {
+                    screen.videoTrack.constraints = constraints;
+                    events.push('rate');
+                };
+                const harness = loadRenderer({
+                    platform,
+                    mode,
+                    mediaDevices: {
+                        async getDisplayMedia(value) {
+                            options = value;
+                            events.push('display');
+                            return screen;
+                        },
+                        async getUserMedia() {
+                            assert.equal(testReview, false, 'Review must never request a microphone');
+                            events.push('mic');
+                            return mic;
+                        },
+                    },
+                });
+                assert.equal(await harness.api.startCapture(5, 'medium', false, testReview), true);
+                assert.equal(options.video, true);
+                assert.deepEqual(Object.keys(options).sort(), ['audio', 'video']);
+                assert.deepEqual(JSON.parse(JSON.stringify(screen.videoTrack.constraints)), {
+                    frameRate: { ideal: testReview ? 5 : 1, max: testReview ? 5 : 1 },
+                });
+                assert.deepEqual(events.slice(0, 2), ['display', 'rate']);
+                const expectsLoopback = platform === 'win32' && mode !== 'mic_only' && !testReview;
+                assert.equal(typeof options.audio === 'object', expectsLoopback);
+                if (!expectsLoopback) assert.equal(options.audio, false);
+                assert.equal(events.includes('mic'), !testReview && mode !== 'speaker_only');
+                assert.equal(
+                    harness.calls.some(call => call.channel === 'start-macos-audio'),
+                    platform === 'darwin' && mode !== 'mic_only' && !testReview
+                );
+                harness.api.stopCapture();
+                assert.equal(screen.videoTrack.stopped, true);
+            });
+        }
+    }
+}
+
+for (const testReview of [false, true]) {
+    for (const support of ['missing', 'rejected']) {
+        test(`${testReview ? 'review' : 'screen-only'} capture stays usable when optional frame-rate constraints are ${support}`, async () => {
+            const screen = makeStream();
+            let acquired = 0;
+            if (support === 'missing') delete screen.videoTrack.applyConstraints;
+            else {
+                screen.videoTrack.applyConstraints = async () => {
+                    const error = new Error('Invalid capture constraints');
+                    error.name = 'OverconstrainedError';
+                    throw error;
+                };
+            }
+            const harness = loadRenderer({
+                mediaDevices: {
+                    async getDisplayMedia(options) {
+                        assert.equal(options.video, true);
+                        assert.equal(options.audio, false);
+                        acquired += 1;
+                        return screen;
+                    },
+                    getUserMedia() {
+                        assert.fail('Screen-only capture must not open a microphone');
+                    },
+                },
+            });
+            assert.equal(await harness.api.startCapture(5, 'medium', true, testReview), true);
+            assert.equal(acquired, 1, 'Unsupported tuning must not reacquire the display or prompt again');
+            assert.equal(screen.videoTrack.stopped, false);
+            assert.doesNotMatch(harness.app.status, /Error: Capture/);
+            assert.equal(harness.warnings.length, 1);
+            assert.match(harness.warnings[0][0], /native rate/);
+            assert.equal(
+                harness.calls.some(call => call.channel === 'review:begin'),
+                testReview
+            );
+            harness.api.stopCapture();
+            assert.equal(screen.videoTrack.stopped, true);
+        });
+    }
+}
+
+test('canceling optional frame-rate setup stops its stream immediately and cannot restart capture after a late rejection', async () => {
+    const screen = makeStream();
+    let rejectRate;
+    screen.videoTrack.applyConstraints = () => new Promise((resolve, reject) => (rejectRate = reject));
+    const harness = loadRenderer({
+        mediaDevices: {
+            async getDisplayMedia() {
+                return screen;
+            },
+            getUserMedia() {
+                assert.fail('Audio must not start after screen capture is canceled');
+            },
+        },
+    });
+    const start = harness.api.startCapture(5, 'medium', true, true);
+    while (!rejectRate) await new Promise(resolve => setImmediate(resolve));
+    harness.api.stopCapture();
+    assert.equal(screen.videoTrack.stopped, true);
+    rejectRate(new Error('Invalid capture constraints'));
+    assert.equal(await start, false);
+    assert.equal(
+        harness.calls.some(call => call.channel === 'review:begin'),
+        false
+    );
+    assert.doesNotMatch(harness.app.status, /Error: Capture/);
+});
+
+test('late frame-rate setup completion only cleans its old stream and leaves a newer review session running', async () => {
+    const oldScreen = makeStream();
+    const currentScreen = makeStream();
+    let resolveRate;
+    oldScreen.videoTrack.applyConstraints = () => new Promise(resolve => (resolveRate = resolve));
+    let acquisitions = 0;
+    const harness = loadRenderer({
+        mediaDevices: {
+            async getDisplayMedia() {
+                acquisitions += 1;
+                return acquisitions === 1 ? oldScreen : currentScreen;
+            },
+        },
+    });
+    const oldStart = harness.api.startCapture(5, 'medium', true, true);
+    while (!resolveRate) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(await harness.api.startCapture(5, 'medium', true, true), true);
+    resolveRate();
+    assert.equal(await oldStart, false);
+    assert.equal(oldScreen.videoTrack.stopped, true);
+    assert.equal(currentScreen.videoTrack.stopped, false);
+    assert.equal(harness.calls.filter(call => call.channel === 'review:begin').length, 1);
     harness.api.stopCapture();
 });
 
@@ -659,7 +957,8 @@ test('review mode begins only after the screen stream is ready and requests no a
     release(stream);
     assert.equal(await start, true);
     assert.equal(options.audio, false);
-    assert.equal(options.video.frameRate, 5);
+    assert.equal(options.video, true);
+    assert.deepEqual(JSON.parse(JSON.stringify(stream.videoTrack.constraints)), { frameRate: { ideal: 5, max: 5 } });
     assert.equal(harness.calls.filter(call => call.channel === 'review:begin').length, 1);
     assert.equal(harness.contexts.length, 0);
     harness.api.stopCapture();

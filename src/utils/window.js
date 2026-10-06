@@ -1,4 +1,4 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, screen, systemPreferences } = require('electron');
 const path = require('node:path');
 const storage = require('../storage');
 const { getDefaultKeybinds, createShortcutRegistrar } = require('./keybinds');
@@ -59,7 +59,7 @@ function createWindow(sendToRenderer, geminiSessionRef) {
         },
     });
     currentReviewOverlay = reviewOverlay;
-    registerAutomaticScreenCapture(session.defaultSession, {
+    const screenCapture = registerAutomaticScreenCapture(session.defaultSession, {
         desktopCapturer,
         screen,
         mainWindow,
@@ -101,7 +101,7 @@ function createWindow(sendToRenderer, geminiSessionRef) {
     }
     if (result.failures.length) console.warn('Unavailable keyboard shortcuts:', result.failures);
 
-    setupWindowIpcHandlers(mainWindow, geminiSessionRef);
+    setupWindowIpcHandlers(mainWindow, geminiSessionRef, screenCapture);
     mainWindow.on('blur', () => setShortcutsPaused(false));
     mainWindow.webContents.on('render-process-gone', () => setShortcutsPaused(false));
 
@@ -178,7 +178,7 @@ function disposeGlobalShortcuts() {
     shortcutRegistrar.dispose();
 }
 
-function setupWindowIpcHandlers(mainWindow, geminiSessionRef) {
+function setupWindowIpcHandlers(mainWindow, geminiSessionRef, screenCapture) {
     const reviewOverlay = currentReviewOverlay;
     const isTrusted = event =>
         !mainWindow.isDestroyed() && event.sender === mainWindow.webContents && event.senderFrame === mainWindow.webContents.mainFrame;
@@ -199,6 +199,18 @@ function setupWindowIpcHandlers(mainWindow, geminiSessionRef) {
             return handler(...args);
         });
     }
+    ipcMain.handle('screen-capture:diagnostics', event => {
+        if (!isTrusted(event)) return { success: false, error: 'Invalid screen capture request.' };
+        let permissionStatus = 'unknown';
+        if (process.platform === 'darwin') {
+            try {
+                permissionStatus = systemPreferences.getMediaAccessStatus('screen');
+            } catch {
+                // Older macOS runtimes may not expose screen access status.
+            }
+        }
+        return { failure: screenCapture?.getLastFailure() || null, permissionStatus };
+    });
     const onViewChanged = (event, view) => {
         if (event.sender !== mainWindow.webContents) return;
         if (!mainWindow.isDestroyed()) {
@@ -252,6 +264,7 @@ function setupWindowIpcHandlers(mainWindow, geminiSessionRef) {
         ipcMain.removeListener('view-changed', onViewChanged);
         ipcMain.removeHandler('window-minimize');
         ipcMain.removeHandler('toggle-window-visibility');
+        ipcMain.removeHandler('screen-capture:diagnostics');
         for (const channel of Object.keys(reviewHandlers)) ipcMain.removeHandler(channel);
         reviewOverlay?.end();
         if (currentReviewOverlay === reviewOverlay) currentReviewOverlay = null;

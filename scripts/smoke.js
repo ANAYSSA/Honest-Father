@@ -1,5 +1,5 @@
 // Launch the real Electron app with isolated storage and verify its rendered UI.
-const { app, BrowserWindow, screen } = require('electron');
+const { app, BrowserWindow, screen, session } = require('electron');
 const os = require('node:os');
 const path = require('node:path');
 const assert = require('node:assert/strict');
@@ -110,6 +110,61 @@ app.whenReady().then(async () => {
         assert.equal(result.screenShortcutWorks, true);
         assert.equal(result.reviewButtonVisible, true);
         assert.equal(result.reviewStartWorks, true);
+        // Exercise Chromium's real media negotiation using only this synthetic app
+        // tab. No desktop pixels, audio, OS capture permission, or provider are used.
+        const manager = require('../src/utils/window').getReviewOverlay();
+        const display = screen.getPrimaryDisplay();
+        let nativeRequests = 0;
+        session.defaultSession.setDisplayMediaRequestHandler(
+            (request, callback) => {
+                nativeRequests++;
+                assert.equal(request.frame, window.webContents.mainFrame);
+                assert.equal(request.videoRequested, true);
+                assert.equal(request.audioRequested, false);
+                callback({ video: request.frame });
+            },
+            { useSystemPicker: false }
+        );
+        for (const review of [false, true]) {
+            if (review) assert.equal(manager.recordSource({ display_id: String(display.id) }).success, true);
+            const capture = await window.webContents.executeJavaScript(`(async () => {
+                const original = navigator.mediaDevices.getDisplayMedia.bind(navigator.mediaDevices);
+                let stream;
+                let requested;
+                navigator.mediaDevices.getDisplayMedia = async options => {
+                    requested = options;
+                    stream = await original(options);
+                    return stream;
+                };
+                try {
+                    const success = await window.cheatingDaddy.startCapture(5, 'medium', true, ${review});
+                    const settings = stream?.getVideoTracks()[0].getSettings();
+                    return {success, requested, width:settings?.width,height:settings?.height,frameRate:settings?.frameRate};
+                } finally {
+                    window.cheatingDaddy.stopCapture();
+                    await require('electron').ipcRenderer.invoke('review:end');
+                    navigator.mediaDevices.getDisplayMedia = original;
+                }
+            })()`);
+            assert.equal(capture.success, true, 'Real getDisplayMedia negotiation succeeds');
+            assert.equal(capture.requested.video, true, 'Initial media capture has no forced resolution or FPS constraints');
+            assert.equal(capture.requested.audio, false);
+            assert.ok(capture.width > 0 && capture.height > 0);
+            assert.ok(capture.frameRate <= (review ? 5 : 1));
+            console.log('Native synthetic media negotiation passed:', JSON.stringify({ review, ...capture }));
+        }
+        assert.equal(nativeRequests, 2, 'Each start acquires one stream without retrying');
+        if (process.platform === 'darwin') {
+            session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => callback(null), { useSystemPicker: false });
+            const denial = await window.webContents.executeJavaScript(`(async () => {
+                const success=await window.cheatingDaddy.startCapture(5,'medium',true);
+                const app=document.querySelector('cheating-daddy-app');
+                return {success,status:app.statusText};
+            })()`);
+            assert.equal(denial.success, false);
+            assert.doesNotMatch(denial.status, /Invalid capture constraints/);
+            assert.match(denial.status, /macOS|Screen & System Audio Recording/);
+        }
         const tracking = await window.webContents.executeJavaScript(`(() => {
             const { createReviewFrameTracker } = require('./utils/reviewFrame');
             const canvas = document.createElement('canvas');
@@ -150,8 +205,6 @@ app.whenReady().then(async () => {
         assert.ok(tracking.elapsed < 2000, 'Local tracking has bounded processing time');
         console.log('Synthetic browser text tracking passed:', JSON.stringify(tracking));
         // Exercise the real isolated overlay without capturing a screen or calling any provider.
-        const manager = require('../src/utils/window').getReviewOverlay();
-        const display = screen.getPrimaryDisplay();
         assert.equal(manager.recordSource({ display_id: String(display.id) }).success, true);
         assert.equal(manager.begin().success, true);
         assert.equal(window.isVisible(), false);

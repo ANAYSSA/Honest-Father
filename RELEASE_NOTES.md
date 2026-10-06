@@ -6,7 +6,13 @@
 
 Honest Father is an open-source assistant for mock interviews, exam preparation, and learning, forked from Cheating Daddy.
 
-## New in 0.10.2
+## New in 0.10.3
+
+- Screen capture starts at the display’s native proportions. Optional low frame rates are applied after the stream opens; unsupported rate settings no longer prevent capture.
+- macOS capture failures retain the original screen-source error and check the running app’s permission status. A failed source is no longer mislabeled as invalid capture parameters or always treated as a disabled permission.
+- Native media negotiation is now tested in Electron on both platforms, including ordinary and Test Review starts, cancellation, and macOS source rejection.
+
+## Test Review introduced in 0.10.2
 
 - Two start buttons: **Start Session** for the existing flow and **Start Test Review** for multiple-choice practice.
 - Test Review circles the proposed correct radio button or checkbox on screen. Command+Enter / Ctrl+Enter captures a question; Command+Backslash / Ctrl+Backslash hides or shows its marks. It does not click or submit answers.

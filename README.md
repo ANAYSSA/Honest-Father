@@ -21,7 +21,13 @@ Requires macOS 13 or later, or 64-bit Windows 10/11.
 
 macOS builds have an ad hoc signature verified after packaging. They are not Developer ID signed or notarized, so macOS may require approval under **System Settings → Privacy & Security**. Windows builds are unsigned and may show SmartScreen. Each platform includes a `SHA256SUMS.txt` file for verifying downloads. Linux packaging is outside the scope of this fork's release workflow.
 
-## What changed in 0.10.2
+## What changed in 0.10.3
+
+- Screen capture starts at the display’s native proportions. Optional low frame rates are applied after the stream opens; unsupported rate settings no longer prevent capture.
+- macOS capture failures retain the original screen-source error and check the running app’s permission status. A failed source is no longer mislabeled as invalid capture parameters or always treated as a disabled permission.
+- Native media negotiation is now tested in Electron on both platforms, including ordinary and Test Review starts, cancellation, and macOS source rejection.
+
+## Test Review introduced in 0.10.2
 
 - Added **Start Test Review** beside **Start Session**. It analyzes a multiple-choice practice question and circles the proposed correct radio button or checkbox directly on screen.
 - **Command + Enter** / **Ctrl + Enter** captures a new question. The show/hide shortcut toggles the marks in Test Review.

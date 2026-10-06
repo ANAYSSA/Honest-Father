@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const { registerAutomaticScreenCapture, selectScreenSource } = require('../src/utils/screenCapture');
 
-function makeHarness({ platform = 'darwin', sources, getSources } = {}) {
+function makeHarness({ platform = 'darwin', sources, getSources, onSourceSelected, onCallback } = {}) {
     const frame = {};
     let displayId = 22;
     let destroyed = false;
@@ -30,7 +30,7 @@ function makeHarness({ platform = 'darwin', sources, getSources } = {}) {
     };
     let handler;
     let handlerOptions;
-    registerAutomaticScreenCapture(
+    const controller = registerAutomaticScreenCapture(
         {
             setDisplayMediaRequestHandler(value, options) {
                 handler = value;
@@ -47,6 +47,7 @@ function makeHarness({ platform = 'darwin', sources, getSources } = {}) {
             screen,
             mainWindow,
             platform,
+            onSourceSelected,
             logger: { warn: (...args) => warnings.push(args) },
         }
     );
@@ -55,12 +56,16 @@ function makeHarness({ platform = 'darwin', sources, getSources } = {}) {
         warnings,
         available,
         handlerOptions,
+        getLastFailure: controller.getLastFailure,
         select: () => selectScreenSource(available, screen, mainWindow),
         moveToDisplay: id => (displayId = id),
         destroy: () => (destroyed = true),
         async request(overrides = {}) {
             const results = [];
-            await handler({ frame, videoRequested: true, audioRequested: false, ...overrides }, result => results.push(result));
+            await handler({ frame, videoRequested: true, audioRequested: false, ...overrides }, result => {
+                results.push(result);
+                onCallback?.(result);
+            });
             assert.equal(results.length, 1);
             return results[0];
         },
@@ -106,6 +111,8 @@ test('macOS display capture never asks Chromium for Windows loopback audio', asy
 test('empty sources and Screen Recording permission errors deny capture cleanly', async () => {
     const empty = makeHarness({ sources: [] });
     assert.equal(await empty.request(), null);
+    assert.equal(empty.getLastFailure().code, 'no_screen_sources');
+    assert.equal(empty.getLastFailure().stage, 'sources');
     const denied = makeHarness({
         getSources: () => {
             throw new Error('Screen Recording permission denied');
@@ -113,6 +120,7 @@ test('empty sources and Screen Recording permission errors deny capture cleanly'
     });
     assert.equal(await denied.request(), null);
     assert.equal(denied.warnings.length, 1);
+    assert.equal(denied.getLastFailure().error, 'Screen Recording permission denied');
 });
 
 test('requests from a destroyed or different frame do not enumerate any screen', async () => {
@@ -133,6 +141,108 @@ test('closing the window during source enumeration cannot grant a late capture',
     harness.destroy();
     resolveSources(harness.available);
     assert.equal(await request, null);
+    assert.equal(harness.getLastFailure().code, 'capture_cancelled');
+});
+
+test('native Electron string rejections retain the original cause with a bounded timestamped copy', async () => {
+    const before = Date.now();
+    const harness = makeHarness({ getSources: () => Promise.reject('Failed to get sources.') });
+    assert.equal(harness.getLastFailure(), null);
+    assert.equal(await harness.request(), null);
+    const failure = harness.getLastFailure();
+    assert.equal(failure.code, 'source_enumeration_failed');
+    assert.equal(failure.stage, 'sources');
+    assert.equal(failure.error, 'Failed to get sources.');
+    assert.ok(failure.at >= before && failure.at <= Date.now());
+    assert.deepEqual(harness.warnings, [['Screen capture could not start:', 'Failed to get sources.']]);
+    failure.error = 'changed externally';
+    failure.code = 'changed externally';
+    assert.equal(harness.getLastFailure().error, 'Failed to get sources.');
+    assert.equal(harness.getLastFailure().code, 'source_enumeration_failed');
+});
+
+test('capture diagnostics clean control characters, bound long messages, and handle non-Error rejections', async () => {
+    const harness = makeHarness({ getSources: () => Promise.reject(`\u0000 Permission\n\tdenied \u007f${'x'.repeat(800)}`) });
+    assert.equal(await harness.request(), null);
+    const failure = harness.getLastFailure();
+    assert.equal(failure.error.length, 512);
+    assert.equal(/[\u0000-\u001f\u007f-\u009f]/.test(failure.error), false);
+    assert.ok(failure.error.startsWith('Permission denied '));
+    const unknown = makeHarness({ getSources: () => Promise.reject(null) });
+    assert.equal(await unknown.request(), null);
+    assert.equal(unknown.getLastFailure().error, 'Screen capture could not start.');
+});
+
+test('starting a new request clears an old failure immediately and a successful grant keeps it cleared', async () => {
+    let resolveSources;
+    let attempts = 0;
+    const harness = makeHarness({
+        getSources: () => {
+            if (++attempts === 1) return Promise.reject(new Error('Temporary enumeration failure'));
+            return new Promise(resolve => (resolveSources = resolve));
+        },
+    });
+    assert.equal(await harness.request(), null);
+    assert.ok(harness.getLastFailure());
+    const next = harness.request();
+    assert.equal(harness.getLastFailure(), null);
+    resolveSources(harness.available);
+    assert.equal((await next).video, harness.available[1]);
+    assert.equal(harness.getLastFailure(), null);
+});
+
+test('source-selection exceptions deny capture and preserve their own stage', async () => {
+    const harness = makeHarness({
+        onSourceSelected: () => {
+            throw new Error('Selected monitor disappeared');
+        },
+    });
+    assert.equal(await harness.request(), null);
+    assert.equal(harness.getLastFailure().code, 'source_selection_failed');
+    assert.equal(harness.getLastFailure().stage, 'source-selected');
+    assert.equal(harness.getLastFailure().error, 'Selected monitor disappeared');
+});
+
+test('callback exceptions are diagnosed without invoking the native callback twice', async () => {
+    const harness = makeHarness({
+        onCallback: () => {
+            throw 'The capture frame ended';
+        },
+    });
+    assert.equal((await harness.request()).video, harness.available[1]);
+    assert.equal(harness.getLastFailure().code, 'capture_callback_failed');
+    assert.equal(harness.getLastFailure().stage, 'callback');
+    assert.equal(harness.getLastFailure().error, 'The capture frame ended');
+});
+
+test('an older async failure cannot replace diagnostics from a newer successful request', async () => {
+    let rejectFirst;
+    let attempts = 0;
+    const harness = makeHarness({
+        getSources: () => (++attempts === 1 ? new Promise((resolve, reject) => (rejectFirst = reject)) : harness.available),
+    });
+    const first = harness.request();
+    assert.equal((await harness.request()).video, harness.available[1]);
+    rejectFirst('Old request failed');
+    assert.equal(await first, null);
+    assert.equal(harness.getLastFailure(), null);
+});
+
+test('an older async success cannot grant capture or erase a newer failed request', async () => {
+    let resolveFirst;
+    let attempts = 0;
+    const selected = [];
+    const harness = makeHarness({
+        getSources: () => (++attempts === 1 ? new Promise(resolve => (resolveFirst = resolve)) : Promise.reject('Current source failure')),
+        onSourceSelected: source => selected.push(source),
+    });
+    const first = harness.request();
+    assert.equal(await harness.request(), null);
+    const failure = harness.getLastFailure();
+    resolveFirst(harness.available);
+    assert.equal(await first, null);
+    assert.deepEqual(harness.getLastFailure(), failure);
+    assert.deepEqual(selected, []);
 });
 
 test('the actual window setup installs automatic capture and supplies the matching monitor', async () => {
