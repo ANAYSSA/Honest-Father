@@ -41,6 +41,7 @@ function loadHistory({ writeText = () => {}, deleteAllSessions = async () => ({ 
     };
     const source = fs
         .readFileSync(path.resolve(__dirname, '../src/components/views/HistoryView.js'), 'utf8')
+        .replace(/\r\n?/g, '\n')
         .replace(/^import .+;\n/gm, '')
         .replace('export class HistoryView', 'class HistoryView');
     vm.runInNewContext(source, context);

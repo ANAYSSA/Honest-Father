@@ -19,6 +19,7 @@ const context = {
 };
 const source = fs
     .readFileSync(path.resolve(__dirname, '../src/utils/responseRendering.js'), 'utf8')
+    .replace(/\r\n?/g, '\n')
     .replace(/^import .+;\n/gm, '')
     .replace(/^const MATH_STYLESHEET = .+;$/m, "const MATH_STYLESHEET = 'file:///app/node_modules/katex/dist/katex.min.css';")
     .replace(/^export /gm, '');
