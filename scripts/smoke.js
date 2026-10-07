@@ -181,6 +181,8 @@ app.whenReady().then(async () => {
         // Capture a separate static synthetic tab, so hiding the Review renderer
         // does not also stop its source. No desktop pixels, audio, OS capture
         // permission, external browser, or provider are used.
+        await require('./smoke-visibility')(window);
+        await require('./smoke-history')(window);
         const manager = require('../src/utils/window').getReviewOverlay();
         const display = screen.getPrimaryDisplay();
         const mediaSource = new BrowserWindow({

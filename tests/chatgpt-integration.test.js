@@ -14,6 +14,7 @@ function harness() {
     let onChange;
     const models = [{ id: 'available-model', name: 'Account model', supportsPro: false }];
     const deps = {
+        './historyModels': require('../src/utils/historyModels'),
         electron: {
             app: { getPath: () => '/isolated-user-data', once() {} },
             net: { fetch() {} },

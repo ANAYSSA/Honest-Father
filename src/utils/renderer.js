@@ -1099,7 +1099,14 @@ async function sendTextMessage(text) {
 // Listen for conversation data from main process and save to storage
 ipcRenderer.on('save-conversation-turn', async (event, data) => {
     try {
-        await storage.saveSession(data.sessionId, { conversationHistory: data.fullHistory });
+        await storage.saveSession(data.sessionId, {
+            conversationHistory: data.fullHistory,
+            profile: data.profile,
+            customPrompt: data.customPrompt,
+            modelInfo: data.modelInfo,
+            modelsUsed: data.modelsUsed,
+            historyEpoch: data.historyEpoch,
+        });
         console.log('Conversation session saved:', data.sessionId);
     } catch (error) {
         console.error('Error saving conversation session:', error);
@@ -1112,6 +1119,9 @@ ipcRenderer.on('save-session-context', async (event, data) => {
         await storage.saveSession(data.sessionId, {
             profile: data.profile,
             customPrompt: data.customPrompt,
+            modelInfo: data.modelInfo,
+            modelsUsed: data.modelsUsed,
+            historyEpoch: data.historyEpoch,
         });
         console.log('Session context saved:', data.sessionId, 'profile:', data.profile);
     } catch (error) {
@@ -1124,6 +1134,9 @@ ipcRenderer.on('save-screen-analysis', async (event, data) => {
     try {
         await storage.saveSession(data.sessionId, {
             screenAnalysisHistory: data.fullHistory,
+            modelInfo: data.modelInfo,
+            modelsUsed: data.modelsUsed,
+            historyEpoch: data.historyEpoch,
             profile: data.profile,
             customPrompt: data.customPrompt,
         });
@@ -1343,6 +1356,7 @@ const theme = {
     applyBackgrounds(backgroundColor, alpha = 0.8) {
         const root = document.documentElement;
         const baseRgb = this.hexToRgb(backgroundColor);
+        root.style.setProperty('--bg-opaque', `rgb(${baseRgb.r}, ${baseRgb.g}, ${baseRgb.b})`);
 
         // For light themes, darken; for dark themes, lighten
         const isLight = (baseRgb.r + baseRgb.g + baseRgb.b) / 3 > 128;

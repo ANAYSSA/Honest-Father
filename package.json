@@ -1,7 +1,7 @@
 {
     "name": "honest-father",
     "productName": "Honest Father",
-    "version": "0.11.0",
+    "version": "0.11.1",
     "description": "AI assistant for mock interviews, exam preparation, and learning",
     "main": "src/index.js",
     "scripts": {
@@ -28,7 +28,9 @@
     "license": "GPL-3.0",
     "dependencies": {
         "@google/genai": "2.27.0",
+        "dompurify": "3.4.16",
         "electron-squirrel-startup": "^1.0.1",
+        "katex": "0.19.0",
         "ws": "8.22.0"
     },
     "devDependencies": {
@@ -39,7 +41,8 @@
         "@electron-forge/plugin-auto-unpack-natives": "8.0.1",
         "@electron-forge/plugin-fuses": "8.0.1",
         "@electron/fuses": "2.1.3",
-        "electron": "44.5.1"
+        "electron": "44.5.1",
+        "jsdom": "30.1.2"
     },
     "private": true,
     "homepage": "https://github.com/ANAYSSA/Honest-Father",

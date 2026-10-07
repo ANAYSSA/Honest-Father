@@ -214,12 +214,28 @@ function buildSystemPrompt(promptParts, customPrompt = '', googleSearchEnabled =
     return sections.join('');
 }
 
-function getSystemPrompt(profile, customPrompt = '', googleSearchEnabled = true) {
-    const promptParts = profilePrompts[profile] || profilePrompts.interview;
-    return buildSystemPrompt(promptParts, customPrompt, googleSearchEnabled);
+function getAnswerFormattingInstruction(emphasizeAnswerLabels = true) {
+    const instructions = [
+        '**ANSWER PRESENTATION:**',
+        '- For questions and exercises, put the answer first and the explanation after it.',
+        String.raw`- Write mathematical expressions as TeX inside \( ... \) for inline math or \[ ... \] for display math, for example \(\Theta(n^2)\), \(\log_2 n\), and \(\frac{a}{b}\). Use actual math symbols or TeX commands rather than spelling out Greek letters. Do not put math in backticks or a code block; reserve those for code.`,
+        '- Preserve the actual question number and option letters when supplied. Never invent a missing question number or option label, and never guess labels for cropped or unreadable choices.',
+    ];
+    if (emphasizeAnswerLabels !== false) {
+        instructions.push(
+            '- Emphasize each supplied question number and the selected answer letter(s) in Markdown bold at the start of the answer, for example **Question 7 — B**. For multiple answers, include every selected letter. If a label is missing, omit it and start with the answer itself.'
+        );
+    }
+    return instructions.join('\n');
 }
 
-function getScreenshotSystemPrompt(profile = 'interview', customPrompt = '') {
+function getSystemPrompt(profile, customPrompt = '', googleSearchEnabled = true, emphasizeAnswerLabels) {
+    const promptParts = profilePrompts[profile] || profilePrompts.interview;
+    const prompt = buildSystemPrompt(promptParts, customPrompt, googleSearchEnabled);
+    return typeof emphasizeAnswerLabels === 'boolean' ? `${prompt}\n\n${getAnswerFormattingInstruction(emphasizeAnswerLabels)}` : prompt;
+}
+
+function getScreenshotSystemPrompt(profile = 'interview', customPrompt = '', emphasizeAnswerLabels = true) {
     const contexts = {
         interview: 'mock interview practice',
         exam: 'exam preparation and study exercises',
@@ -239,6 +255,8 @@ function getScreenshotSystemPrompt(profile = 'interview', customPrompt = '') {
 - Use Markdown for clear formatting. Focus on the visible question and keep the explanation concise.
 - If essential text, code, answer choices, or constraints are unreadable or missing, identify exactly what is needed before solving.
 
+${getAnswerFormattingInstruction(emphasizeAnswerLabels)}
+
 User-provided context
 -----
 ${customPrompt}
@@ -249,4 +267,5 @@ module.exports = {
     profilePrompts,
     getSystemPrompt,
     getScreenshotSystemPrompt,
+    getAnswerFormattingInstruction,
 };

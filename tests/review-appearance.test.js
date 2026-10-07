@@ -53,6 +53,7 @@ function preferenceStorage(savedPreferences = {}, { failWrites = false } = {}) {
             if (name === 'path') return path;
             if (name === 'os') return { platform: () => 'darwin', homedir: () => '/mock-home' };
             if (name === './utils/reviewAppearance') return appearance;
+            if (name === './utils/testVisibility') return require('../src/utils/testVisibility');
             throw new Error(`Unexpected storage dependency: ${name}`);
         },
         console: { warn() {}, error() {}, log() {} },
@@ -227,6 +228,7 @@ async function customizeView(preferences = {}, failure = null) {
     let View;
     const saved = { ...preferences };
     const calls = [];
+    const events = [];
     const source = fs
         .readFileSync(path.join(__dirname, '../src/components/views/CustomizeView.js'), 'utf8')
         .replace(/^import[^\n]+\n/gm, '')
@@ -234,6 +236,15 @@ async function customizeView(preferences = {}, failure = null) {
     vm.runInNewContext(source, {
         LitElement: class {
             requestUpdate() {}
+            dispatchEvent(event) {
+                events.push(event);
+            }
+        },
+        CustomEvent: class {
+            constructor(type, options) {
+                this.type = type;
+                Object.assign(this, options);
+            }
         },
         unifiedPageStyles: '',
         css: () => '',
@@ -244,6 +255,7 @@ async function customizeView(preferences = {}, failure = null) {
         window: {
             require(name) {
                 if (name === './utils/reviewAppearance') return appearance;
+                if (name === './utils/testVisibility') return require('../src/utils/testVisibility');
                 if (name === './utils/keybinds') return { getDefaultKeybinds: () => ({ toggleReviewMarks: 'Cmd+Shift+\\' }) };
                 if (name === 'electron') return { ipcRenderer: { invoke: async () => ({ success: false }) } };
                 throw new Error(`Unexpected module: ${name}`);
@@ -263,11 +275,11 @@ async function customizeView(preferences = {}, failure = null) {
             },
             theme: { get: () => ({ background: '#111111' }), getAll: () => [], applyBackgrounds() {}, save: async () => {} },
         },
-        console,
+        console: { ...console, error() {} },
     });
     const view = new View();
     await new Promise(resolve => setImmediate(resolve));
-    return { view, calls, saved, reload: () => customizeView(saved) };
+    return { view, calls, saved, events, reload: () => customizeView(saved) };
 }
 
 test('Customize loads persisted marker appearance and saves changes that survive another view instance', async () => {
@@ -302,14 +314,41 @@ test('Customize refuses invalid inputs and reports persistence failure without c
 });
 
 test('Restore all settings resets marker appearance and distinguishes window and Review marker shortcuts', async () => {
-    const h = await customizeView({ reviewMarkerColor: '#ffffff', reviewMarkerOpacity: 0.1 });
+    const h = await customizeView({
+        reviewMarkerColor: '#ffffff',
+        reviewMarkerOpacity: 0.1,
+        blindMode: true,
+        answerTextOpacity: 0,
+        answerFrameOpacity: 0,
+        emphasizeAnswerLabels: false,
+    });
     h.view.resetKeybinds = async () => true;
     await h.view.restoreAllSettings();
     assert.equal(h.saved.reviewMarkerColor, '#16a34a');
     assert.equal(h.saved.reviewMarkerOpacity, 1);
     assert.equal(h.view.reviewMarkerColor, '#16a34a');
     assert.equal(h.view.reviewMarkerOpacity, 1);
+    assert.equal(h.saved.blindMode, false);
+    assert.equal(h.saved.answerTextOpacity, 100);
+    assert.equal(h.saved.answerFrameOpacity, 100);
+    assert.equal(h.saved.emphasizeAnswerLabels, true);
+    assert.equal(h.events.length, 1);
+    assert.equal(h.events[0].type, 'test-visibility-changed');
+    assert.deepEqual({ ...h.events[0].detail }, { blindMode: false, answerTextOpacity: 100, answerFrameOpacity: 100, emphasizeAnswerLabels: true });
+    assert.equal(h.events[0].bubbles, true);
+    assert.equal(h.events[0].composed, true);
     const actions = h.view.getKeybindActions();
     assert.equal(actions.find(action => action.key === 'toggleVisibility').name, 'Toggle App Window');
     assert.equal(actions.find(action => action.key === 'toggleReviewMarks').name, 'Toggle Review Marks');
+});
+
+test('failed Restore all settings cannot announce visibility defaults that were not saved', async () => {
+    const h = await customizeView({ blindMode: true, answerTextOpacity: 0 }, 'Disk is full.');
+    h.view.resetKeybinds = async () => assert.fail('Failed preference writes must stop before shortcut changes');
+    await h.view.restoreAllSettings();
+    assert.equal(h.saved.blindMode, true);
+    assert.equal(h.saved.answerTextOpacity, 0);
+    assert.equal(h.events.length, 0);
+    assert.equal(h.view.clearStatusType, 'error');
+    assert.match(h.view.clearStatusMessage, /Disk is full/);
 });

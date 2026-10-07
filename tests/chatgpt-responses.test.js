@@ -190,6 +190,38 @@ test('a completed response can supply the final answer without delta events and 
     assert.equal(await client.respond({ prompt: 'Hello' }), 'Final only');
 });
 
+test('history model metadata reports resolved response IDs and actual request reasoning, without guessing fast for unknown models', async () => {
+    const infos = [];
+    const client = service({ responses: [sse(completed()), sse(completed())] });
+    await client.respond({ model: 'gpt-6-astra', prompt: 'One', onModel: value => infos.push(value) });
+    await client.respond({ model: 'gpt-6-astra', prompt: 'Two', reasoningMode: 'pro', onModel: value => infos.push(value) });
+    assert.equal(infos[0].displayName, 'GPT-6 Astra');
+    assert.equal(infos[0].reasoningEffort, JSON.parse(client.calls.find(call => call.method === 'POST').body).reasoning.effort);
+    assert.equal(infos[1].reasoningMode, 'pro');
+    assert.equal(infos[1].reasoningEffort, undefined);
+    const resolved = service({
+        responses: [
+            sse(
+                event('response.completed', {
+                    response: {
+                        status: 'completed',
+                        model: 'resolved-snapshot',
+                        reasoning: { effort: 'medium' },
+                        output: [{ type: 'message', content: [{ type: 'output_text', text: 'Done' }] }],
+                    },
+                })
+            ),
+        ],
+    });
+    await resolved.respond({ model: 'gpt-6-astra', prompt: 'Three', onModel: value => infos.push(value) });
+    assert.equal(infos[2].modelId, 'resolved-snapshot');
+    assert.equal(infos[2].displayName, 'resolved-snapshot');
+    assert.equal(infos[2].reasoningEffort, 'medium');
+    const unknown = service({ models: [row('new-account-model', 'New model')] });
+    await unknown.respond({ prompt: 'Four', onModel: value => infos.push(value) });
+    assert.equal(infos[3].reasoningEffort, undefined);
+});
+
 test('partial content is not success without response.completed, including DONE sentinel', async () => {
     for (const tail of ['', 'data: [DONE]\n\n']) {
         const client = service({ responses: [sse(event('response.output_text.delta', { delta: 'Partial' }), tail)] });

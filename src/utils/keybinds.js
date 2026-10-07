@@ -5,6 +5,7 @@ const ACTION_NAMES = {
     moveRight: 'Move Window Right',
     toggleVisibility: 'Toggle App Window',
     toggleReviewMarks: 'Toggle Review Marks',
+    openVisibilitySettings: 'Open Test Visibility Settings',
     toggleClickThrough: 'Toggle Click-through',
     nextStep: 'Ask Next Step',
     previousResponse: 'Previous Response',
@@ -25,6 +26,7 @@ function getDefaultKeybinds(platform = process.platform) {
         moveRight: isMac ? 'Alt+Right' : 'Ctrl+Right',
         toggleVisibility: `${primary}+\\`,
         toggleReviewMarks: `${primary}+Shift+\\`,
+        openVisibilitySettings: `${primary}+Shift+,`,
         toggleClickThrough: `${primary}+M`,
         nextStep: `${primary}+Enter`,
         previousResponse: `${primary}+[`,
@@ -104,23 +106,21 @@ function normalizeKeybinds(input, platform = process.platform) {
     for (const action of Object.keys(keybinds)) {
         if (input && Object.hasOwn(input, action)) keybinds[action] = normalizeAccelerator(input[action], platform);
     }
-    // Older settings have no marks action. Keep every existing custom binding if
-    // it already uses the new default; only the newly added action gets a free key.
-    // Explicitly saved marks bindings still use the normal conflict validation.
-    if (input && !Object.hasOwn(input, 'toggleReviewMarks')) {
+    // Keep existing custom bindings when adding an action to older settings.
+    // Explicitly saved bindings still go through ordinary conflict validation.
+    const primary = platform === 'darwin' ? 'Cmd' : 'Ctrl';
+    for (const [addedAction, alternatives] of [
+        ['toggleReviewMarks', [`${primary}+Alt+Shift+\\`, `${primary}+Alt+\\`]],
+        ['openVisibilitySettings', [`${primary}+Alt+Shift+,`, `${primary}+Alt+,`]],
+    ]) {
+        if (!input || Object.hasOwn(input, addedAction)) continue;
         const occupied = new Set(
             Object.entries(keybinds)
-                .filter(([action]) => action !== 'toggleReviewMarks')
+                .filter(([action]) => action !== addedAction)
                 .map(([, accelerator]) => normalizeAccelerator(accelerator, platform).toLowerCase())
         );
-        const primary = platform === 'darwin' ? 'Cmd' : 'Ctrl';
-        const candidates = [
-            keybinds.toggleReviewMarks,
-            `${primary}+Alt+Shift+\\`,
-            `${primary}+Alt+\\`,
-            ...Array.from({ length: 13 }, (_, index) => `${primary}+Shift+F${index + 12}`),
-        ];
-        keybinds.toggleReviewMarks = candidates.find(accelerator => !occupied.has(normalizeAccelerator(accelerator, platform).toLowerCase()));
+        const candidates = [keybinds[addedAction], ...alternatives, ...Array.from({ length: 13 }, (_, index) => `${primary}+Shift+F${index + 12}`)];
+        keybinds[addedAction] = candidates.find(accelerator => !occupied.has(normalizeAccelerator(accelerator, platform).toLowerCase()));
     }
     const seen = new Map();
     for (const action of Object.keys(keybinds)) {

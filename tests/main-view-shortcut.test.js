@@ -113,7 +113,10 @@ function loadApp({ local = false } = {}) {
         customElements: { define: (_, constructor) => (App = constructor) },
         cheatingDaddy: api,
         window: {
-            require: () => ({ ipcRenderer: { invoke: async (...args) => calls.push(['ipc', ...args]) } }),
+            require: name =>
+                name === './utils/testVisibility'
+                    ? require('../src/utils/testVisibility')
+                    : { ipcRenderer: { invoke: async (...args) => calls.push(['ipc', ...args]) } },
         },
         console: { error() {} },
     });

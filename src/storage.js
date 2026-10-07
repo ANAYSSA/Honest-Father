@@ -7,6 +7,7 @@ const {
     isReviewMarkerColor,
     isReviewMarkerOpacity,
 } = require('./utils/reviewAppearance');
+const { DEFAULT_TEST_VISIBILITY, normalizeTestVisibility, validateTestVisibilityUpdate } = require('./utils/testVisibility');
 
 const CONFIG_VERSION = 1;
 
@@ -45,6 +46,7 @@ const DEFAULT_PREFERENCES = {
     backgroundTransparency: 0.8,
     reviewMarkerColor: DEFAULT_REVIEW_APPEARANCE.color,
     reviewMarkerOpacity: DEFAULT_REVIEW_APPEARANCE.opacity,
+    ...DEFAULT_TEST_VISIBILITY,
     googleSearchEnabled: false,
     localLlmModel: 'unsloth/Qwen3.5-4B-GGUF:Q4_K_M',
     whisperModel: 'tiny.en',
@@ -240,10 +242,12 @@ function getPreferences() {
     const appearance = reviewAppearanceFromPreferences(preferences);
     preferences.reviewMarkerColor = appearance.color;
     preferences.reviewMarkerOpacity = appearance.opacity;
+    Object.assign(preferences, normalizeTestVisibility(preferences));
     return preferences;
 }
 
 function setPreferences(preferences) {
+    validateTestVisibilityUpdate(preferences);
     if (Object.hasOwn(preferences, 'reviewMarkerColor') && !isReviewMarkerColor(preferences.reviewMarkerColor))
         throw new Error('Choose a valid marker color.');
     if (Object.hasOwn(preferences, 'reviewMarkerOpacity') && !isReviewMarkerOpacity(preferences.reviewMarkerOpacity))
@@ -404,13 +408,20 @@ function getModelForToday() {
 }
 
 // ============ HISTORY ============
+let historyEpoch = 0;
+
+function getHistoryEpoch() {
+    return historyEpoch;
+}
 
 function getSessionPath(sessionId) {
     return path.join(getHistoryDir(), `${sessionId}.json`);
 }
 
 function saveSession(sessionId, data) {
+    if (data.historyEpoch !== undefined && data.historyEpoch !== historyEpoch) return false;
     const sessionPath = getSessionPath(sessionId);
+    const { normalizeModelInfo, mergeModelsUsed } = require('./utils/historyModels');
 
     // Load existing session to preserve metadata
     const existingSession = readJsonFile(sessionPath, null);
@@ -422,6 +433,8 @@ function saveSession(sessionId, data) {
         // Profile context - set once when session starts
         profile: data.profile || existingSession?.profile || null,
         customPrompt: data.customPrompt || existingSession?.customPrompt || null,
+        modelInfo: normalizeModelInfo(data.modelInfo) || normalizeModelInfo(existingSession?.modelInfo),
+        modelsUsed: mergeModelsUsed(existingSession?.modelsUsed || [], data.modelsUsed || []),
         // Conversation data
         conversationHistory: data.conversationHistory || existingSession?.conversationHistory || [],
         screenAnalysisHistory: data.screenAnalysisHistory || existingSession?.screenAnalysisHistory || [],
@@ -464,6 +477,8 @@ function getAllSessions() {
                         screenAnalysisCount: data.screenAnalysisHistory?.length || 0,
                         profile: data.profile || null,
                         customPrompt: data.customPrompt || null,
+                        modelInfo: data.modelInfo || null,
+                        modelsUsed: data.modelsUsed || [],
                     };
                 }
                 return null;
@@ -497,6 +512,7 @@ function deleteAllSessions() {
                 fs.unlinkSync(path.join(historyDir, file));
             });
         }
+        historyEpoch++;
         return true;
     } catch (error) {
         console.error('Error deleting all sessions:', error.message);
@@ -549,6 +565,7 @@ module.exports = {
 
     // History
     saveSession,
+    getHistoryEpoch,
     getSession,
     getAllSessions,
     deleteSession,

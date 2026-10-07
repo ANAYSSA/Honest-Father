@@ -6,7 +6,17 @@ const { saveDebugAudio } = require('../audioUtils');
 const { getSystemPrompt, getScreenshotSystemPrompt } = require('./prompts');
 const { REVIEW_SYSTEM_PROMPT, REVIEW_USER_PROMPT, parseReviewAnswer } = require('./testReview');
 const { createGeminiModelResolver } = require('./geminiModels');
-const { getAvailableModel, incrementLimitCount, getApiKey, getGroqApiKey, incrementCharUsage, getConfig, getPreferences } = require('../storage');
+const { normalizeModelInfo, mergeModelsUsed } = require('./historyModels');
+const {
+    getAvailableModel,
+    incrementLimitCount,
+    getApiKey,
+    getGroqApiKey,
+    incrementCharUsage,
+    getConfig,
+    getPreferences,
+    getHistoryEpoch,
+} = require('../storage');
 const {
     connectCloud,
     sendCloudAudio,
@@ -69,6 +79,9 @@ let currentProfile = null;
 let currentCustomPrompt = null;
 let isInitializingSession = false;
 let currentSystemPrompt = null;
+let currentModelInfo = null;
+let modelsUsed = [];
+let lastSessionTimestamp = 0;
 
 function formatSpeakerResults(results) {
     let text = '';
@@ -139,8 +152,11 @@ function buildContextMessage() {
 }
 
 // Conversation management functions
-function initializeNewSession(profile = null, customPrompt = null) {
-    currentSessionId = Date.now().toString();
+function initializeNewSession(profile = null, customPrompt = null, modelInfo = null) {
+    lastSessionTimestamp = Math.max(Date.now(), lastSessionTimestamp + 1);
+    currentSessionId = lastSessionTimestamp.toString();
+    currentModelInfo = normalizeModelInfo(modelInfo);
+    modelsUsed = [];
     startTransportLog(currentSessionId);
     currentTranscription = '';
     groqRequestStartedForTurn = false;
@@ -155,21 +171,44 @@ function initializeNewSession(profile = null, customPrompt = null) {
     if (profile) {
         sendToRenderer('save-session-context', {
             sessionId: currentSessionId,
+            ...savedSessionMetadata(),
             profile: profile,
             customPrompt: customPrompt || '',
         });
     }
 }
 
-function saveConversationTurn(transcription, aiResponse) {
+function savedSessionMetadata() {
+    return { modelInfo: currentModelInfo, modelsUsed, historyEpoch: getHistoryEpoch(), profile: currentProfile, customPrompt: currentCustomPrompt };
+}
+
+function recordModel(modelInfo) {
+    const model = normalizeModelInfo(modelInfo);
+    if (model) {
+        currentModelInfo = model;
+        modelsUsed = mergeModelsUsed(modelsUsed, model);
+    }
+    return model;
+}
+
+function resetSavedHistory() {
+    lastSessionTimestamp = Math.max(Date.now(), lastSessionTimestamp + 1);
+    currentSessionId = lastSessionTimestamp.toString();
+    conversationHistory = [];
+    screenAnalysisHistory = [];
+    modelsUsed = [];
+}
+
+function saveConversationTurn(transcription, aiResponse, modelInfo = currentModelInfo) {
     if (!currentSessionId) {
-        initializeNewSession();
+        initializeNewSession(currentProfile, currentCustomPrompt, modelInfo);
     }
 
     const conversationTurn = {
         timestamp: Date.now(),
         transcription: transcription.trim(),
         ai_response: aiResponse.trim(),
+        modelInfo: recordModel(modelInfo),
     };
 
     conversationHistory.push(conversationTurn);
@@ -178,14 +217,15 @@ function saveConversationTurn(transcription, aiResponse) {
     // Send to renderer to save in IndexedDB
     sendToRenderer('save-conversation-turn', {
         sessionId: currentSessionId,
+        ...savedSessionMetadata(),
         turn: conversationTurn,
         fullHistory: conversationHistory,
     });
 }
 
-function saveScreenAnalysis(prompt, response, model) {
+function saveScreenAnalysis(prompt, response, model, modelInfo) {
     if (!currentSessionId) {
-        initializeNewSession();
+        initializeNewSession(currentProfile, currentCustomPrompt, modelInfo);
     }
 
     const analysisEntry = {
@@ -193,6 +233,7 @@ function saveScreenAnalysis(prompt, response, model) {
         prompt: prompt,
         response: response.trim(),
         model: model,
+        modelInfo: recordModel(modelInfo),
     };
 
     screenAnalysisHistory.push(analysisEntry);
@@ -201,6 +242,7 @@ function saveScreenAnalysis(prompt, response, model) {
     // Send to renderer to save
     sendToRenderer('save-screen-analysis', {
         sessionId: currentSessionId,
+        ...savedSessionMetadata(),
         analysis: analysisEntry,
         fullHistory: screenAnalysisHistory,
         profile: currentProfile,
@@ -296,6 +338,9 @@ async function sendToChatGPT(prompt, imageBase64) {
     let first = true;
     try {
         const history = chatgptConversationHistory.slice(-8);
+        let responseModelInfo =
+            normalizeModelInfo(chatgptOptions.modelInfo) ||
+            normalizeModelInfo({ provider: 'chatgpt', modelId: chatgptOptions.model, reasoningMode: chatgptOptions.reasoningMode });
         const text = await chatgpt.respond({
             ...chatgptOptions,
             prompt,
@@ -303,9 +348,12 @@ async function sendToChatGPT(prompt, imageBase64) {
             mimeType: 'image/jpeg',
             history,
             instructions: imageBase64
-                ? getScreenshotSystemPrompt(currentProfile || 'interview', currentCustomPrompt || '')
+                ? getScreenshotSystemPrompt(currentProfile || 'interview', currentCustomPrompt || '', getPreferences().emphasizeAnswerLabels)
                 : currentSystemPrompt || 'Answer clearly and concisely.',
             signal: controller.signal,
+            onModel(modelInfo) {
+                if (isCurrent()) responseModelInfo = normalizeModelInfo(modelInfo) || responseModelInfo;
+            },
             onText(text) {
                 if (!isCurrent()) return;
                 sendToRenderer(first ? 'new-response' : 'update-response', text);
@@ -313,8 +361,8 @@ async function sendToChatGPT(prompt, imageBase64) {
             },
         });
         if (!isCurrent()) return { success: true, skipped: true, code: 'cancelled' };
-        if (imageBase64) saveScreenAnalysis(prompt, text, chatgptOptions.model);
-        else saveConversationTurn(prompt, text);
+        if (imageBase64) saveScreenAnalysis(prompt, text, responseModelInfo.modelId, responseModelInfo);
+        else saveConversationTurn(prompt, text, responseModelInfo);
         chatgptConversationHistory.push({ role: 'user', content: prompt.slice(-6000) }, { role: 'assistant', content: text.slice(-6000) });
         chatgptConversationHistory = chatgptConversationHistory.slice(-8);
         chatgptAutomaticPaused = false;
@@ -524,7 +572,7 @@ async function sendToGroq(transcription) {
                 content: cleanedResponse,
             });
 
-            saveConversationTurn(transcription, cleanedResponse);
+            saveConversationTurn(transcription, cleanedResponse, { provider: 'groq', modelId: modelToUse });
         } else {
             console.warn(`Groq returned no final answer (${modelToUse})`);
             logTransportEvent('groq.text.empty_response', {
@@ -594,7 +642,11 @@ async function sendImageToGroq(base64Data, prompt, { testReview = false } = {}) 
                         role: 'system',
                         content: testReview
                             ? REVIEW_SYSTEM_PROMPT
-                            : getScreenshotSystemPrompt(currentProfile || 'interview', currentCustomPrompt || ''),
+                            : getScreenshotSystemPrompt(
+                                  currentProfile || 'interview',
+                                  currentCustomPrompt || '',
+                                  getPreferences().emphasizeAnswerLabels
+                              ),
                     },
                     {
                         role: 'user',
@@ -681,7 +733,7 @@ async function sendImageToGroq(base64Data, prompt, { testReview = false } = {}) 
             return { success: false, error: GROQ_EMPTY_RESPONSE_MESSAGE };
         }
 
-        if (!testReview) saveScreenAnalysis(prompt, cleanedResponse, model);
+        if (!testReview) saveScreenAnalysis(prompt, cleanedResponse, model, { provider: 'groq', modelId: model });
         logTransportEvent('groq.image.completed', {
             model,
             response: cleanedResponse,
@@ -784,7 +836,7 @@ async function sendToGemma(transcription) {
                 groqConversationHistory = groqConversationHistory.slice(-40);
             }
 
-            saveConversationTurn(transcription, fullText);
+            saveConversationTurn(transcription, fullText, { provider: 'gemini', modelId: model });
         }
 
         console.log('Gemma response completed');
@@ -890,10 +942,12 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
         const systemPrompt = `${getSystemPrompt(
             profile,
             customPrompt,
-            enabledTools.some(tool => tool.googleSearch)
+            enabledTools.some(tool => tool.googleSearch),
+            getPreferences().emphasizeAnswerLabels !== false
         )}\n\nRespond in the selected language: ${language}.`;
         currentSystemPrompt = systemPrompt;
-        if (!isReconnect) initializeNewSession(profile, customPrompt);
+        const liveModelInfo = normalizeModelInfo({ provider: 'gemini', modelId: liveModel });
+        if (!isReconnect) initializeNewSession(profile, customPrompt, isChatGPTSession() ? chatgptOptions?.modelInfo : liveModelInfo);
         if (!isCurrent()) return null;
 
         const connectPromise = client.live
@@ -952,7 +1006,7 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
                         if (message.serverContent?.turnComplete) {
                             sendFinalTranscriptionToChatGPT();
                             if (!isChatGPTSession() && currentTranscription.trim() && messageBuffer.trim()) {
-                                saveConversationTurn(currentTranscription, messageBuffer);
+                                saveConversationTurn(currentTranscription, messageBuffer, liveModelInfo);
                             }
                             currentTranscription = '';
                             messageBuffer = '';
@@ -1353,7 +1407,11 @@ async function sendImageToGeminiHttp(base64Data, prompt, { testReview = false } 
                         maxOutputTokens: 4096,
                         systemInstruction: testReview
                             ? REVIEW_SYSTEM_PROMPT
-                            : getScreenshotSystemPrompt(currentProfile || 'interview', currentCustomPrompt || ''),
+                            : getScreenshotSystemPrompt(
+                                  currentProfile || 'interview',
+                                  currentCustomPrompt || '',
+                                  getPreferences().emphasizeAnswerLabels
+                              ),
                         ...(testReview ? { responseMimeType: 'application/json', temperature: 0.1 } : {}),
                         abortSignal: controller.signal,
                     },
@@ -1402,7 +1460,7 @@ async function sendImageToGeminiHttp(base64Data, prompt, { testReview = false } 
         }
         incrementLimitCount(model);
         modelResolver.remember(apiKey, selectedModel, model, kind);
-        if (!testReview) saveScreenAnalysis(prompt, fullText, model);
+        if (!testReview) saveScreenAnalysis(prompt, fullText, model, { provider: 'gemini', modelId: model });
 
         return { success: true, text: fullText, model: model };
     } catch (error) {
@@ -1466,8 +1524,8 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
                 return false;
             }
         }
-        initializeNewSession(profile, customPrompt);
-        currentSystemPrompt = getScreenshotSystemPrompt(profile, customPrompt);
+        initializeNewSession(profile, customPrompt, useChatGPT ? chatgptOptions?.modelInfo : null);
+        currentSystemPrompt = getScreenshotSystemPrompt(profile, customPrompt, getPreferences().emphasizeAnswerLabels);
         sendToRenderer('update-status', 'Screen ready');
         return true;
     });
@@ -1772,6 +1830,7 @@ module.exports = {
     getStoredSetting,
     sendToRenderer,
     initializeNewSession,
+    resetSavedHistory,
     saveConversationTurn,
     getCurrentSessionData,
     killExistingSystemAudioDump,

@@ -1,4 +1,5 @@
 // ChatGPT credentials stay in the main process. IPC exposes account status only.
+const { chatGPTModelInfo } = require('./historyModels');
 let auth;
 let responses;
 let onDisconnect = () => {};
@@ -83,7 +84,8 @@ async function prepareChatGPT() {
     const model = models.find(item => item.id === selected);
     if (!model) throw new Error('This ChatGPT model is unavailable for the account. Select a model in Home.');
     if (config.chatgptReasoningMode === 'pro' && !model.supportsPro) throw new Error('Pro is unavailable for this model. Select Standard in Home.');
-    return { model: model.id, reasoningMode: config.chatgptReasoningMode === 'pro' ? 'pro' : 'standard' };
+    const reasoningMode = config.chatgptReasoningMode === 'pro' ? 'pro' : 'standard';
+    return { model: model.id, reasoningMode, modelInfo: chatGPTModelInfo(model, reasoningMode) };
 }
 
 function respond(options) {

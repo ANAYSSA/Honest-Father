@@ -1,5 +1,6 @@
 // ChatGPT plan usage: public Responses API only. Tokens remain in the main process.
 // https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference
+const { chatGPTModelInfo, normalizeModelInfo } = require('./historyModels');
 const API_ROOT = 'https://api.openai.com/v1';
 const MODEL_CACHE_MS = 5 * 60 * 1000;
 const MAX_EVENT_CHARS = 2 * 1024 * 1024;
@@ -162,7 +163,7 @@ function responseText(response) {
         .join('\n');
 }
 
-async function readResponseStream(response, { signal, onText, token }) {
+async function readResponseStream(response, { signal, onText, onResponse, token }) {
     if (!response.body?.getReader) throw new ChatGPTResponseError('ChatGPT returned no readable response stream.', { code: 'missing_stream' });
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -217,6 +218,7 @@ async function readResponseStream(response, { signal, onText, token }) {
                 throw new ChatGPTResponseError('ChatGPT returned an empty answer. Try again.', { code: 'empty_response', requestId });
             if (finalText.length > MAX_OUTPUT_CHARS) throw new ChatGPTResponseError('ChatGPT response is too long.', { code: 'response_too_large' });
             complete = true;
+            onResponse?.(event.response);
             onText?.(finalText);
         }
     };
@@ -368,6 +370,7 @@ function createChatGPTResponses({
         instructions,
         signal,
         onText,
+        onModel,
         reasoningMode = 'standard',
     }) {
         const input = createInput(prompt, imageBase64, mimeType, history);
@@ -415,7 +418,23 @@ function createChatGPTResponses({
                     await waitFor(new Promise(resolve => setTimeout(resolve, retryDelayMs)), request.signal);
                 }
             }
-            return await readResponseStream(response, { signal: request.signal, onText, token });
+            return await readResponseStream(response, {
+                signal: request.signal,
+                onText,
+                token,
+                onResponse(completed) {
+                    const resolvedId = identifier(completed?.model) || id;
+                    const resolved = models.find(candidate => candidate.id === resolvedId);
+                    const selectedInfo = chatGPTModelInfo(resolved || { id: resolvedId }, reasoningMode);
+                    onModel?.(
+                        normalizeModelInfo({
+                            ...selectedInfo,
+                            reasoningMode: completed?.reasoning?.mode || reasoningMode,
+                            reasoningEffort: completed?.reasoning?.effort || body.reasoning?.effort,
+                        })
+                    );
+                },
+            });
         } catch (error) {
             if (request.signal.aborted) throw request.signal.reason || abortError();
             if (error instanceof ChatGPTResponseError || error?.name === 'AbortError') throw error;

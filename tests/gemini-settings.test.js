@@ -21,6 +21,7 @@ function loadStorage(config = {}) {
             if (name === 'os') return { platform: () => 'darwin', homedir: () => '/mock-home' };
             if (name === 'path') return path;
             if (name === './utils/reviewAppearance') return require('../src/utils/reviewAppearance');
+            if (name === './utils/testVisibility') return require('../src/utils/testVisibility');
             throw new Error(`Unexpected dependency: ${name}`);
         },
         console,

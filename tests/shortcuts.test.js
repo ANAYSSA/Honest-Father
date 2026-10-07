@@ -83,6 +83,22 @@ for (const [platform, primary] of [
         assert.equal(collisionMigration.toggleReviewMarks, `${primary}+Shift+F12`);
         assert.deepEqual(normalizeKeybinds(collisionMigration, platform), collisionMigration, 'Saving and restarting retains the migrated shortcut');
     });
+
+    test(`visibility recovery gains an available shortcut without replacing legacy custom keys on ${platform}`, () => {
+        const defaults = getDefaultKeybinds(platform);
+        assert.equal(defaults.openVisibilitySettings, `${primary}+Shift+,`);
+        const migrated = normalizeKeybinds({ toggleVisibility: `Shift+${primary}+,`, nextStep: `Alt+Shift+${primary}+,` }, platform);
+        assert.equal(migrated.toggleVisibility, `${primary}+Shift+,`);
+        assert.equal(migrated.nextStep, `${primary}+Alt+Shift+,`);
+        assert.equal(migrated.openVisibilitySettings, `${primary}+Alt+,`);
+        assert.deepEqual(normalizeKeybinds(migrated, platform), migrated, 'Migration remains stable after saving and restarting');
+        const explicit = normalizeKeybinds({ ...defaults, openVisibilitySettings: `${primary}+Alt+V` }, platform);
+        assert.equal(explicit.openVisibilitySettings, `${primary}+Alt+V`);
+        assert.throws(
+            () => normalizeKeybinds({ ...defaults, openVisibilitySettings: defaults.toggleVisibility }, platform),
+            /Open Test Visibility Settings conflicts with Toggle App Window/
+        );
+    });
 }
 
 test('equivalent aliases and modifier order cannot duplicate another action', () => {

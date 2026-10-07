@@ -132,6 +132,16 @@ function updateGlobalShortcuts(keybinds, mainWindow, sendToRenderer, geminiSessi
             if (mainWindow.isDestroyed() || !currentReviewOverlay?.isActive()) return;
             currentReviewOverlay.toggle();
         },
+        openVisibilitySettings: () => {
+            if (mainWindow.isDestroyed()) return;
+            mouseEventsIgnored = false;
+            mainWindow.setIgnoreMouseEvents(false);
+            mainWindow.webContents.send('click-through-toggled', false);
+            sendToRenderer('open-test-visibility');
+            if (mainWindow.isMinimized()) mainWindow.restore();
+            mainWindow.show();
+            mainWindow.focus();
+        },
         toggleClickThrough: () => {
             if (mainWindow.isDestroyed()) return;
             mouseEventsIgnored = !mouseEventsIgnored;
@@ -233,7 +243,7 @@ function setupWindowIpcHandlers(mainWindow, geminiSessionRef, screenCapture) {
         return { failure: screenCapture?.getLastFailure() || null, permissionStatus };
     });
     const onViewChanged = (event, view) => {
-        if (event.sender !== mainWindow.webContents) return;
+        if (!isTrusted(event) || typeof view !== 'string') return;
         if (!mainWindow.isDestroyed()) {
             const isLiveMode = view === 'assistant';
 
@@ -246,7 +256,9 @@ function setupWindowIpcHandlers(mainWindow, geminiSessionRef, screenCapture) {
             }
 
             if (!isLiveMode) {
+                mouseEventsIgnored = false;
                 mainWindow.setIgnoreMouseEvents(false);
+                mainWindow.webContents.send('click-through-toggled', false);
             }
         }
     };

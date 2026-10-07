@@ -8,6 +8,8 @@ const { EventEmitter } = require('node:events');
 function harness({ platform = 'win32', permissionStatus = 'unknown', permissionThrows = false } = {}) {
     const handlers = new Map();
     const calls = [];
+    const rendererMessages = [];
+    const mouseEventStates = [];
     const endRequests = [];
     const ipcMain = new EventEmitter();
     ipcMain.handle = (channel, handler) => handlers.set(channel, handler);
@@ -39,8 +41,11 @@ function harness({ platform = 'win32', permissionStatus = 'unknown', permissionT
             super();
             this.destroyed = false;
             this.visible = true;
+            this.minimized = false;
+            this.focused = false;
             this.webContents = new EventEmitter();
             this.webContents.mainFrame = {};
+            this.webContents.send = (...args) => rendererMessages.push(args);
         }
         isDestroyed() {
             return this.destroyed;
@@ -55,6 +60,24 @@ function harness({ platform = 'win32', permissionStatus = 'unknown', permissionT
         showInactive() {
             this.visible = true;
             calls.push('show-main');
+        }
+        show() {
+            this.visible = true;
+            calls.push('show-main-focused');
+        }
+        isMinimized() {
+            return this.minimized;
+        }
+        restore() {
+            this.minimized = false;
+            calls.push('restore-main');
+        }
+        focus() {
+            this.focused = true;
+            calls.push('focus-main');
+        }
+        setIgnoreMouseEvents(ignored) {
+            mouseEventStates.push(ignored);
         }
         setContentProtection() {}
         setVisibleOnAllWorkspaces() {}
@@ -115,9 +138,9 @@ function harness({ platform = 'win32', permissionStatus = 'unknown', permissionT
             throw new Error(`Unexpected module: ${name}`);
         },
     });
-    const window = module.exports.createWindow(() => {}, sessionRef);
+    const window = module.exports.createWindow((...args) => rendererMessages.push(args), sessionRef);
     const trusted = { sender: window.webContents, senderFrame: window.webContents.mainFrame };
-    return { window, handlers, calls, endRequests, overlay, trusted, actions, ipcMain };
+    return { window, handlers, calls, endRequests, overlay, trusted, actions, ipcMain, rendererMessages, mouseEventStates };
 }
 
 test('review IPC rejects another window and a child frame before changing main visibility', async () => {
@@ -127,6 +150,49 @@ test('review IPC rejects another window and a child frame before changing main v
         assert.equal((await h.handlers.get('toggle-window-visibility')(event)).success, false);
     }
     assert.deepEqual(h.calls, []);
+});
+
+for (const platform of ['darwin', 'win32']) {
+    test(`visibility recovery restores a hidden click-through window without ending its session on ${platform}`, () => {
+        const h = harness({ platform });
+        h.actions.toggleClickThrough();
+        h.window.visible = false;
+        h.window.minimized = true;
+        h.actions.openVisibilitySettings();
+        assert.equal(h.window.visible, true);
+        assert.equal(h.window.minimized, false);
+        assert.equal(h.window.focused, true);
+        assert.deepEqual(h.mouseEventStates, [true, false]);
+        assert.deepEqual(h.rendererMessages, [['click-through-toggled', true], ['click-through-toggled', false], ['open-test-visibility']]);
+        assert.deepEqual(h.calls, ['restore-main', 'show-main-focused', 'focus-main']);
+        h.actions.toggleClickThrough();
+        assert.equal(h.mouseEventStates.at(-1), true, 'Recovery resets the stored click-through state as well as the native window');
+        h.window.destroyed = true;
+        const previousMessages = h.rendererMessages.length;
+        h.actions.openVisibilitySettings();
+        assert.equal(h.rendererMessages.length, previousMessages, 'Recovery does not send to a destroyed renderer');
+    });
+}
+
+test('only the main frame can restore click-through via view changes and returning to a session preserves the reset state', () => {
+    const h = harness();
+    h.actions.toggleClickThrough();
+    for (const event of [{ sender: {} }, { sender: h.window.webContents, senderFrame: {} }, { sender: h.window.webContents }]) {
+        h.ipcMain.emit('view-changed', event, 'test-visibility');
+    }
+    h.ipcMain.emit('view-changed', h.trusted, {});
+    assert.deepEqual(h.mouseEventStates, [true]);
+    h.ipcMain.emit('view-changed', h.trusted, 'test-visibility');
+    assert.deepEqual(h.mouseEventStates, [true, false]);
+    h.ipcMain.emit('view-changed', h.trusted, 'assistant');
+    h.actions.toggleClickThrough();
+    assert.deepEqual(h.mouseEventStates, [true, false, true]);
+    assert.deepEqual(h.rendererMessages, [
+        ['click-through-toggled', true],
+        ['click-through-toggled', false],
+        ['click-through-toggled', true],
+    ]);
+    assert.deepEqual(h.calls, [], 'Opening settings does not end capture or change Review marks');
 });
 
 for (const platform of ['darwin', 'win32']) {

@@ -17,6 +17,7 @@ const { createShutdownHandler, createQuitController } = require('./utils/shutdow
 const storage = require('./storage');
 const { reviewAppearanceFromPreferences } = require('./utils/reviewAppearance');
 const { setupChatGPT } = require('./utils/chatgpt');
+const { clearSavedHistory, copyHistoryResponse } = require('./utils/historyActions');
 
 // One process owns rotating OAuth tokens and the global shortcuts.
 const ownsInstance = app.requestSingleInstanceLock();
@@ -237,6 +238,13 @@ function setupStorageIpcHandlers() {
     });
 
     // ============ HISTORY ============
+    ipcMain.handle('clipboard:write-response', async (event, payload) => {
+        try {
+            return copyHistoryResponse({ event, payload, window: mainWindow, clipboard: require('electron').clipboard });
+        } catch (error) {
+            return { success: false, error: 'Could not copy the response.' };
+        }
+    });
     ipcMain.handle('storage:get-all-sessions', async () => {
         try {
             return { success: true, data: storage.getAllSessions() };
@@ -275,10 +283,9 @@ function setupStorageIpcHandlers() {
         }
     });
 
-    ipcMain.handle('storage:delete-all-sessions', async () => {
+    ipcMain.handle('storage:delete-all-sessions', async event => {
         try {
-            storage.deleteAllSessions();
-            return { success: true };
+            return clearSavedHistory({ event, window: mainWindow, storage, resetSavedHistory: require('./utils/gemini').resetSavedHistory });
         } catch (error) {
             console.error('Error deleting all sessions:', error);
             return { success: false, error: error.message };

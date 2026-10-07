@@ -63,6 +63,7 @@ function harness({
     const children = [];
     const stored = {
         apiKey: 'unit-test-key',
+        preferences: { googleSearchEnabled: false },
         groqKey,
         config: { geminiLiveModel: 'gemini-3.8-live', groqModel: 'qwen/qwen3.6-27b', groqImageModel: 'qwen/qwen3.6-27b', disableGroqThinking: true },
     };
@@ -152,6 +153,7 @@ function harness({
             },
         },
         './prompts': require('../src/utils/prompts'),
+        './historyModels': require('../src/utils/historyModels'),
         './testReview': require('../src/utils/testReview'),
         '../storage': {
             getAvailableModel: () => stored.config.geminiImageModel || 'gemini-3.1-flash-lite',
@@ -160,7 +162,8 @@ function harness({
             getGroqApiKey: () => stored.groqKey,
             incrementCharUsage: () => {},
             getConfig: () => stored.config,
-            getPreferences: () => ({ googleSearchEnabled: false }),
+            getPreferences: () => stored.preferences,
+            getHistoryEpoch: () => stored.historyEpoch || 0,
         },
         './cloud': {
             connectCloud: async () => {},
@@ -399,6 +402,99 @@ test('ChatGPT screen-only sessions need no Gemini key or Live connection and str
     assert.equal((await h.invoke('send-text-message', 'Explain why.')).completed, true);
     assert.equal(h.chatgptRequests.length, 2);
     assert.equal(h.chatgptRequests[1].history.length, 2);
+});
+
+test('normal screenshot providers respect label emphasis while preserving math and context', async () => {
+    for (const provider of ['gemini', 'chatgpt']) {
+        for (const enabled of [true, false]) {
+            const h = harness();
+            h.stored.config.normalResponseProvider = provider;
+            h.stored.preferences.emphasizeAnswerLabels = enabled;
+            assert.equal(await h.invoke('initialize-screen-session', 'exam', 'Use **my course context**.'), true);
+            const result = await h.invoke('send-image-content', { data: Buffer.alloc(1600).toString('base64'), prompt: 'Solve the question.' });
+            assert.equal(result.success, true);
+            const instruction = provider === 'chatgpt' ? h.chatgptRequests[0].instructions : h.requests[0].config.systemInstruction;
+            assert.equal(instruction.includes('Emphasize each supplied question number'), enabled);
+            assert.ok(instruction.includes(String.raw`\(\Theta(n^2)\)`));
+            assert.ok(instruction.includes('Use **my course context**.'));
+            if (provider === 'chatgpt') {
+                assert.equal((await h.invoke('send-text-message', 'Explain why.')).success, true);
+                assert.equal(h.chatgptRequests[1].instructions.includes('Emphasize each supplied question number'), enabled);
+            }
+            h.api.closeActiveSession();
+        }
+    }
+});
+
+test('Live and ChatGPT transcribed answers receive the chosen presentation setting', async () => {
+    for (const enabled of [true, false]) {
+        const h = harness();
+        h.stored.preferences.emphasizeAnswerLabels = enabled;
+        h.stored.config.normalResponseProvider = 'chatgpt';
+        assert.equal(await h.invoke('initialize-gemini', 'test-key', 'Use Russian.', 'exam', 'ru-RU'), true);
+        const connection = h.connections[0];
+        const instruction = connection.config.systemInstruction.parts[0].text;
+        assert.equal(instruction.includes('Emphasize each supplied question number'), enabled);
+        assert.ok(instruction.includes(String.raw`\(\Theta(n^2)\)`));
+        assert.match(instruction, /ru-RU/);
+        connection.callbacks.onmessage({ serverContent: { inputTranscription: { text: 'Question 7. Choose A or B.', finished: true } } });
+        await flush();
+        assert.equal(h.chatgptRequests.length, 1);
+        assert.equal(h.chatgptRequests[0].instructions, instruction);
+        h.api.closeActiveSession();
+    }
+});
+
+test('history records actual ChatGPT response metadata and clearing saved buffers does not resurrect older turns', async () => {
+    const initial = {
+        provider: 'chatgpt',
+        modelId: 'account-model',
+        displayName: 'Account model',
+        reasoningMode: 'standard',
+        reasoningEffort: 'low',
+    };
+    const resolved = { ...initial, modelId: 'resolved-model', displayName: 'Resolved model' };
+    const h = harness({
+        chatgptPrepare: async () => ({ model: 'account-model', reasoningMode: 'standard', modelInfo: initial }),
+        chatgptRespond: async options => {
+            options.onModel(resolved);
+            options.onText('Answer');
+            return 'Answer';
+        },
+    });
+    h.stored.config.normalResponseProvider = 'chatgpt';
+    await h.invoke('initialize-screen-session', 'exam', 'Context');
+    assert.equal(h.events.find(event => event.channel === 'save-session-context').data.modelInfo.displayName, 'Account model');
+    await h.invoke('send-image-content', { data: Buffer.alloc(1600).toString('base64'), prompt: 'Question' });
+    const screen = h.events.find(event => event.channel === 'save-screen-analysis').data;
+    assert.equal(screen.analysis.modelInfo.modelId, 'resolved-model');
+    assert.equal(screen.analysis.model, 'resolved-model');
+    await h.invoke('send-text-message', 'First follow-up');
+    const old = h.events.filter(event => event.channel === 'save-conversation-turn').at(-1).data;
+    h.stored.historyEpoch = 1;
+    h.api.resetSavedHistory();
+    await h.invoke('send-text-message', 'After clear');
+    const next = h.events.filter(event => event.channel === 'save-conversation-turn').at(-1).data;
+    assert.notEqual(next.sessionId, old.sessionId);
+    assert.equal(next.fullHistory.length, 1);
+    assert.equal(next.fullHistory[0].transcription, 'After clear');
+    assert.equal(next.fullHistory[0].modelInfo.displayName, 'Resolved model');
+    assert.equal(next.historyEpoch, 1);
+    assert.equal(next.profile, 'exam');
+});
+
+test('a Gemini Live answer keeps its own model after a screenshot used another model', async () => {
+    const h = harness();
+    await h.invoke('initialize-gemini', 'test-key', '', 'exam');
+    await h.invoke('send-image-content', { data: Buffer.alloc(1600).toString('base64'), prompt: 'Question' });
+    const connection = h.connections[0];
+    connection.callbacks.onmessage({
+        serverContent: { inputTranscription: { text: 'Follow-up' }, outputTranscription: { text: 'Spoken answer' }, turnComplete: true },
+    });
+    const saved = h.events.find(event => event.channel === 'save-conversation-turn').data;
+    assert.equal(saved.turn.modelInfo.modelId, 'gemini-3.8-live');
+    assert.equal(saved.modelsUsed.length, 2);
+    assert.equal(saved.modelInfo.modelId, 'gemini-3.8-live');
 });
 
 test('screen quota failure pauses follow-up calls without opening Live or hiding provider error', async () => {
@@ -671,7 +767,7 @@ test('test review caches complete validated JSON without streaming normal answer
     assert.equal(h.connections.length, 0);
     assert.equal(h.children.length, 0);
     assert.equal(h.requests[0].config.responseMimeType, 'application/json');
-    assert.match(h.requests[0].config.systemInstruction, /radio button or checkbox/);
+    assert.equal(h.requests[0].config.systemInstruction, require('../src/utils/testReview').REVIEW_SYSTEM_PROMPT);
     assert.equal(
         h.events.some(event => ['new-response', 'update-response', 'save-screen-analysis'].includes(event.channel)),
         false
@@ -875,6 +971,12 @@ test('both screenshot modes rotate once on explicit model rejection before strea
             ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite']
         );
         assert.equal(h.catalogueRequests.length, 2);
+        if (!testReview) {
+            const saved = h.events.find(event => event.channel === 'save-screen-analysis').data;
+            assert.equal(saved.modelInfo.modelId, 'gemini-3.5-flash-lite');
+            assert.equal(saved.analysis.modelInfo.modelId, 'gemini-3.5-flash-lite');
+            assert.equal(saved.modelsUsed.length, 1, 'A rejected model did not answer and must not be labeled as used');
+        }
         assert.equal((await request()).success, true);
         assert.equal(h.requests.at(-1).model, 'gemini-3.5-flash-lite');
         assert.equal(h.requests.length, 3);

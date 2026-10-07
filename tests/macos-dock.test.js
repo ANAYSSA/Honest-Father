@@ -75,6 +75,7 @@ function loadStartup(platform, ownsInstance = true) {
         './utils/localai': { closeLocalSession: () => calls.push('close-local') },
         './utils/keybinds': {},
         './utils/reviewAppearance': require('../src/utils/reviewAppearance'),
+        './utils/historyActions': require('../src/utils/historyActions'),
         './utils/shutdown': { createShutdownHandler, createQuitController },
         './storage': { initializeStorage: () => calls.push('initialize-storage') },
     };

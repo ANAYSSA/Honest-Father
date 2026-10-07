@@ -451,7 +451,7 @@ async function initializeLocalSession(model, whisperModel, profile, customPrompt
         resampleRemainder = Buffer.alloc(0);
         localConversationHistory = [];
 
-        initializeNewSession(profile, customPrompt);
+        initializeNewSession(profile, customPrompt, { provider: 'local', modelId: model });
         isLocalActive = true;
         initializationController = null;
         sendToRenderer('local-ai-download-progress', { active: false });

@@ -2,6 +2,7 @@ import { html, css, LitElement } from '../../assets/lit-core-2.7.4.min.js';
 import { unifiedPageStyles } from './sharedPageStyles.js';
 
 const { getDefaultKeybinds } = window.require('./utils/keybinds');
+const { DEFAULT_TEST_VISIBILITY, normalizeTestVisibility } = window.require('./utils/testVisibility');
 const { DEFAULT_REVIEW_APPEARANCE, MIN_REVIEW_MARKER_OPACITY, isReviewMarkerColor, isReviewMarkerOpacity, reviewAppearanceFromPreferences } =
     window.require('./utils/reviewAppearance');
 
@@ -350,6 +351,11 @@ export class CustomizeView extends LitElement {
             { key: 'moveRight', name: 'Move Window Right', description: 'Move the app window right' },
             { key: 'toggleVisibility', name: 'Toggle App Window', description: 'Show or hide the app window, including during Test Review' },
             { key: 'toggleReviewMarks', name: 'Toggle Review Marks', description: 'Show or hide Test Review marks and notices' },
+            {
+                key: 'openVisibilitySettings',
+                name: 'Open Test Visibility Settings',
+                description: 'Restore visible, clickable settings during a session, including in Blind mode',
+            },
             { key: 'toggleClickThrough', name: 'Toggle Click-through', description: 'Enable or disable click-through mode' },
             { key: 'nextStep', name: 'Ask Next Step', description: 'Take screenshot and ask for next step' },
             { key: 'previousResponse', name: 'Previous Response', description: 'Move to previous AI response' },
@@ -586,9 +592,11 @@ export class CustomizeView extends LitElement {
                 theme: 'dark',
                 reviewMarkerColor: DEFAULT_REVIEW_APPEARANCE.color,
                 reviewMarkerOpacity: DEFAULT_REVIEW_APPEARANCE.opacity,
+                ...DEFAULT_TEST_VISIBILITY,
             };
             for (const [key, value] of Object.entries(defaults)) {
-                await cheatingDaddy.storage.updatePreference(key, value);
+                const result = await cheatingDaddy.storage.updatePreference(key, value);
+                if (result === false || result?.success === false) throw new Error(result?.error || 'Could not restore settings.');
             }
 
             // Restore keybinds only after the operating system accepts them.
@@ -617,6 +625,14 @@ export class CustomizeView extends LitElement {
             this.updateBackgroundAppearance();
             this.updateFontSize();
             await cheatingDaddy.theme.save(defaults.theme);
+
+            this.dispatchEvent(
+                new CustomEvent('test-visibility-changed', {
+                    detail: normalizeTestVisibility(defaults),
+                    bubbles: true,
+                    composed: true,
+                })
+            );
 
             this.clearStatusMessage = 'All settings restored to defaults';
             this.clearStatusType = 'success';

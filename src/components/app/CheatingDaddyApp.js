@@ -7,6 +7,9 @@ import { AssistantView } from '../views/AssistantView.js';
 import { OnboardingView } from '../views/OnboardingView.js';
 import { AICustomizeView } from '../views/AICustomizeView.js';
 import { FeedbackView } from '../views/FeedbackView.js';
+import '../views/TestVisibilityView.js';
+
+const { normalizeTestVisibility } = window.require('./utils/testVisibility');
 
 export class CheatingDaddyApp extends LitElement {
     static styles = css`
@@ -27,6 +30,53 @@ export class CheatingDaddyApp extends LitElement {
             border-radius: 12px;
             background: var(--bg-app);
             color: var(--text-primary);
+        }
+
+        :host([answer-visibility]) {
+            background: transparent;
+        }
+        :host([visibility-settings-open]) {
+            background: var(--bg-opaque, #141414);
+        }
+        :host([answer-visibility]) .app-shell {
+            position: relative;
+            isolation: isolate;
+            border-color: transparent;
+        }
+        :host([answer-visibility]) .app-shell::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            z-index: -1;
+            pointer-events: none;
+            border: 2px solid rgba(255, 255, 255, 0.18);
+            border-radius: 9px;
+            background: var(--bg-app);
+            opacity: var(--answer-frame-opacity, 1);
+        }
+        :host([answer-visibility]) .content {
+            background: transparent;
+        }
+        :host([blind-mode]) .app-shell::before {
+            display: none;
+        }
+        .session-return {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 48px 24px 8px;
+            background: var(--bg-opaque, #141414);
+        }
+        .session-return button {
+            border: 1px solid var(--border-strong);
+            border-radius: var(--radius-md);
+            padding: 8px 12px;
+            background: var(--bg-elevated);
+            color: var(--text-primary);
+            cursor: pointer;
+        }
+        .session-return button:first-child {
+            font-weight: 600;
         }
 
         /* ── Full app shell: top bar + sidebar/content ── */
@@ -369,6 +419,7 @@ export class CheatingDaddyApp extends LitElement {
 
     static properties = {
         currentView: { type: String },
+        visibilityPreferences: { type: Object },
         statusText: { type: String },
         startTime: { type: Number },
         isRecording: { type: Boolean },
@@ -395,6 +446,7 @@ export class CheatingDaddyApp extends LitElement {
     constructor() {
         super();
         this.currentView = 'main';
+        this.visibilityPreferences = normalizeTestVisibility();
         this.statusText = '';
         this.startTime = null;
         this.isRecording = false;
@@ -458,6 +510,7 @@ export class CheatingDaddyApp extends LitElement {
             this.selectedScreenshotInterval = prefs.selectedScreenshotInterval || '5';
             this.selectedImageQuality = prefs.selectedImageQuality || 'medium';
             this.layoutMode = config.layout || 'normal';
+            this.visibilityPreferences = normalizeTestVisibility(prefs);
 
             this._storageLoaded = true;
             this.requestUpdate();
@@ -473,6 +526,7 @@ export class CheatingDaddyApp extends LitElement {
 
         if (window.require) {
             const { ipcRenderer } = window.require('electron');
+            ipcRenderer.on('open-test-visibility', () => this.navigate('test-visibility'));
             ipcRenderer.on('new-response', (_, response) => this.addNewResponse(response));
             ipcRenderer.on('update-response', (_, response) => this.updateCurrentResponse(response));
             ipcRenderer.on('update-status', (_, status) => this.setStatus(status));
@@ -494,6 +548,7 @@ export class CheatingDaddyApp extends LitElement {
         this._stopTimer();
         if (window.require) {
             const { ipcRenderer } = window.require('electron');
+            ipcRenderer.removeAllListeners('open-test-visibility');
             ipcRenderer.removeAllListeners('new-response');
             ipcRenderer.removeAllListeners('update-response');
             ipcRenderer.removeAllListeners('update-status');
@@ -568,7 +623,7 @@ export class CheatingDaddyApp extends LitElement {
 
     async handleClose() {
         this._sessionStartGeneration = (this._sessionStartGeneration || 0) + 1;
-        if (this.currentView === 'assistant') {
+        if (this.currentView === 'assistant' || this.sessionActive) {
             cheatingDaddy.stopCapture();
             if (window.require) {
                 const { ipcRenderer } = window.require('electron');
@@ -609,6 +664,7 @@ export class CheatingDaddyApp extends LitElement {
         const token = (this._sessionStartGeneration = (this._sessionStartGeneration || 0) + 1);
         try {
             const prefs = await cheatingDaddy.storage.getPreferences();
+            this.visibilityPreferences = normalizeTestVisibility(prefs);
             if (token !== this._sessionStartGeneration) return;
             const providerMode = prefs.providerMode === 'local' ? 'local' : 'byok';
             const config = await cheatingDaddy.storage.getConfig();
@@ -645,11 +701,12 @@ export class CheatingDaddyApp extends LitElement {
     }
 
     async handleScreenStart(testReview = false) {
-        if (this._startingSession) return;
+        if (this._startingSession || this.sessionActive) return;
         this._startingSession = true;
         const token = (this._sessionStartGeneration = (this._sessionStartGeneration || 0) + 1);
         try {
             const prefs = await cheatingDaddy.storage.getPreferences();
+            this.visibilityPreferences = normalizeTestVisibility(prefs);
             if (token !== this._sessionStartGeneration) return;
             if (testReview && prefs.providerMode === 'local') {
                 this.setStatus('Error: Test Review needs a vision provider. Select API keys mode and configure Gemini or Groq in Home.');
@@ -772,6 +829,15 @@ export class CheatingDaddyApp extends LitElement {
     updated(changedProperties) {
         super.updated(changedProperties);
 
+        const answerVisibility = this._isLiveMode() && !this.testReview;
+        this.toggleAttribute('answer-visibility', answerVisibility);
+        this.toggleAttribute('blind-mode', answerVisibility && this.visibilityPreferences.blindMode);
+        this.toggleAttribute('visibility-settings-open', this.currentView === 'test-visibility');
+        this.style.setProperty('--answer-text-opacity', this.visibilityPreferences.answerTextOpacity / 100);
+        this.style.setProperty('--answer-frame-opacity', this.visibilityPreferences.answerFrameOpacity / 100);
+        // Clear every outer paint layer, so 0% is genuinely transparent. Settings
+        // deliberately restore a readable surface even when the answer is invisible.
+        document.body.style.background = answerVisibility ? 'transparent' : this.currentView === 'test-visibility' ? 'var(--bg-opaque, #141414)' : '';
         if (changedProperties.has('currentView') && window.require) {
             const { ipcRenderer } = window.require('electron');
             ipcRenderer.send('view-changed', this.currentView);
@@ -825,6 +891,9 @@ export class CheatingDaddyApp extends LitElement {
                         .selectedScreenshotInterval=${this.selectedScreenshotInterval}
                         .selectedImageQuality=${this.selectedImageQuality}
                         .layoutMode=${this.layoutMode}
+                        @test-visibility-changed=${event => {
+                            this.visibilityPreferences = normalizeTestVisibility(event.detail);
+                        }}
                         .onProfileChange=${p => this.handleProfileChange(p)}
                         .onLanguageChange=${l => this.handleLanguageChange(l)}
                         .onScreenshotIntervalChange=${i => this.handleScreenshotIntervalChange(i)}
@@ -832,6 +901,14 @@ export class CheatingDaddyApp extends LitElement {
                         .onLayoutModeChange=${lm => this.handleLayoutModeChange(lm)}
                     ></customize-view>
                 `;
+
+            case 'test-visibility':
+                return html`<test-visibility-view
+                    .preferences=${this.visibilityPreferences}
+                    @test-visibility-changed=${event => {
+                        this.visibilityPreferences = normalizeTestVisibility(event.detail);
+                    }}
+                ></test-visibility-view>`;
 
             case 'feedback':
                 return html`<feedback-view></feedback-view>`;
@@ -845,6 +922,8 @@ export class CheatingDaddyApp extends LitElement {
             case 'assistant':
                 return html`
                     <assistant-view
+                        .visibilityPreferences=${this.testReview ? normalizeTestVisibility() : this.visibilityPreferences}
+                        .visibilityEnabled=${!this.testReview}
                         .responses=${this.responses}
                         .currentResponseIndex=${this.currentResponseIndex}
                         .selectedProfile=${this.selectedProfile}
@@ -917,6 +996,14 @@ export class CheatingDaddyApp extends LitElement {
                 </svg>`,
             },
             {
+                id: 'test-visibility',
+                label: 'Test Visibility',
+                icon: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z" />
+                    <circle cx="12" cy="12" r="3" />
+                </svg>`,
+            },
+            {
                 id: 'feedback',
                 label: 'Feedback',
                 icon: html`<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24">
@@ -985,7 +1072,7 @@ export class CheatingDaddyApp extends LitElement {
     }
 
     renderLiveBar() {
-        if (!this._isLiveMode()) return '';
+        if (!this._isLiveMode() || (!this.testReview && this.visibilityPreferences.blindMode)) return '';
 
         const profileLabels = {
             interview: 'Interview',
@@ -1040,7 +1127,16 @@ export class CheatingDaddyApp extends LitElement {
                 </div>
                 ${this.renderSidebar()}
                 <div class="content">
-                    ${isLive ? this.renderLiveBar() : ''}
+                    ${
+                        isLive
+                            ? this.renderLiveBar()
+                            : this.sessionActive
+                              ? html`<div class="session-return">
+                                    <button @click=${() => this.navigate('assistant')}>Return to session</button>
+                                    <button @click=${() => this.handleClose()}>End session</button>
+                                </div>`
+                              : ''
+                    }
                     <div class="content-inner ${isLive ? 'live' : ''}">${this.renderCurrentView()}</div>
                 </div>
             </div>

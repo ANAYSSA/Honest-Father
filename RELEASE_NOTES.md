@@ -6,6 +6,14 @@
 
 Honest Father is an open-source assistant for mock interviews, exam preparation, and learning, forked from Cheating Daddy.
 
+## New in 0.11.1
+
+- Answers and History now render Markdown and mathematical notation locally: Θ, Ω, powers, logarithms, fractions and displayed equations. Fonts are bundled; rendering makes no network requests.
+- New **Test Visibility** page: **Blind mode — answers only**, separate text and answer-frame opacity from **0–100%**, and optional bold question numbers and answer letters. Blind mode hides waiting text, status, navigation and input controls; the window is empty until an answer arrives.
+- **Command + Shift + , / Ctrl + Shift + ,** opens readable visibility settings even when the answer is invisible or the window is hidden. **Return to session** keeps capture and answers running. Existing show/hide and Review-marker shortcuts are preserved.
+- History includes **Copy answer**, model labels for newly recorded answers/sessions, and **Clear history** with confirmation. Copy preserves the original response. Clearing history preserves API keys, account sign-in and preferences. Older records without model metadata say **Model not recorded**.
+- Test Review markers, provider choices and the persistent macOS signing identity are unchanged.
+
 ## New in 0.11.0
 
 - Choose **Gemini API** or **ChatGPT account** before **Start Session**. Groq controls are removed from Home; the existing Test Review provider path is preserved.
