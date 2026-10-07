@@ -158,8 +158,12 @@ export class HelpView extends LitElement {
                     <section class="surface">
                         <div class="surface-title">Support</div>
                         <div class="link-row">
-                            <button class="link-button" @click=${() => this._open('https://github.com/ANAYSSA/Honest-Father')}>Website</button>
-                            <button class="link-button" @click=${() => this._open('https://github.com/ANAYSSA/Honest-Father')}>GitHub</button>
+                            <button class="link-button" @click=${() => this._open('https://github.com/CyberKotletochka/Honest-Father')}>
+                                Website
+                            </button>
+                            <button class="link-button" @click=${() => this._open('https://github.com/CyberKotletochka/Honest-Father')}>
+                                GitHub
+                            </button>
                             <button class="link-button" @click=${() => this._open('https://discord.gg/GCBdubnXfJ')}>Discord</button>
                         </div>
                     </section>

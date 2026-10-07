@@ -57,6 +57,24 @@ test('quit defaults use Command on macOS and Control on Windows; old saved setti
     assert.equal(migrated.quitApplication, 'Ctrl+Shift+Q');
 });
 
+test('movement uses Option or Alt arrows and migrates the legacy Windows defaults without taking custom bindings', () => {
+    for (const platform of ['darwin', 'win32']) {
+        for (const direction of ['Up', 'Down', 'Left', 'Right']) assert.equal(getDefaultKeybinds(platform)[`move${direction}`], `Alt+${direction}`);
+    }
+    const old = { ...getDefaultKeybinds('win32'), moveUp: 'Ctrl+Up', moveDown: 'Ctrl+Down', moveLeft: 'Ctrl+Left', moveRight: 'Ctrl+Right' };
+    const migrated = normalizeKeybinds(old, 'win32');
+    for (const direction of ['Up', 'Down', 'Left', 'Right']) assert.equal(migrated[`move${direction}`], `Alt+${direction}`);
+    assert.deepEqual(normalizeKeybinds(migrated, 'win32'), migrated);
+    const custom = normalizeKeybinds({ ...old, moveUp: 'Ctrl+Alt+Up' }, 'win32');
+    assert.equal(custom.moveUp, 'Ctrl+Alt+Up');
+    assert.equal(custom.moveDown, 'Ctrl+Down', 'A deliberately customized movement set stays intact');
+    const collision = normalizeKeybinds({ ...old, nextStep: 'Alt+Up' }, 'win32');
+    assert.equal(collision.nextStep, 'Alt+Up');
+    assert.equal(collision.moveUp, 'Ctrl+Up');
+    assert.equal(collision.moveDown, 'Alt+Down');
+    assert.deepEqual(normalizeKeybinds(collision, 'win32'), collision);
+});
+
 for (const [platform, primary] of [
     ['darwin', 'Cmd'],
     ['win32', 'Ctrl'],

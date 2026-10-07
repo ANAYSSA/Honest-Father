@@ -345,10 +345,14 @@ export class CustomizeView extends LitElement {
 
     getKeybindActions() {
         return [
-            { key: 'moveUp', name: 'Move Window Up', description: 'Move the app window up' },
-            { key: 'moveDown', name: 'Move Window Down', description: 'Move the app window down' },
-            { key: 'moveLeft', name: 'Move Window Left', description: 'Move the app window left' },
-            { key: 'moveRight', name: 'Move Window Right', description: 'Move the app window right' },
+            { key: 'moveUp', name: 'Move Window Up', description: 'Move the answer up without using the mouse (default: Option/Alt + Up)' },
+            { key: 'moveDown', name: 'Move Window Down', description: 'Move the answer down without using the mouse (default: Option/Alt + Down)' },
+            { key: 'moveLeft', name: 'Move Window Left', description: 'Move the answer left without using the mouse (default: Option/Alt + Left)' },
+            {
+                key: 'moveRight',
+                name: 'Move Window Right',
+                description: 'Move the answer right without using the mouse (default: Option/Alt + Right)',
+            },
             { key: 'toggleVisibility', name: 'Toggle App Window', description: 'Show or hide the app window, including during Test Review' },
             { key: 'toggleReviewMarks', name: 'Toggle Review Marks', description: 'Show or hide Test Review marks and notices' },
             {
@@ -356,7 +360,11 @@ export class CustomizeView extends LitElement {
                 name: 'Open Test Visibility Settings',
                 description: 'Restore visible, clickable settings during a session, including in Blind mode',
             },
-            { key: 'toggleClickThrough', name: 'Toggle Click-through', description: 'Enable or disable click-through mode' },
+            {
+                key: 'toggleClickThrough',
+                name: 'Toggle Click-through',
+                description: 'Toggle mouse access outside a session. Active answers always let clicks pass through.',
+            },
             { key: 'nextStep', name: 'Ask Next Step', description: 'Take screenshot and ask for next step' },
             { key: 'previousResponse', name: 'Previous Response', description: 'Move to previous AI response' },
             { key: 'nextResponse', name: 'Next Response', description: 'Move to next AI response' },

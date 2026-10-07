@@ -255,6 +255,7 @@ function setPreferences(preferences) {
     const current = getPreferences();
     const updated = { ...current, ...preferences };
     updated.reviewMarkerColor = updated.reviewMarkerColor.toLowerCase();
+    updated.answerTextColor = updated.answerTextColor.toLowerCase();
     return writeJsonFile(getPreferencesPath(), updated);
 }
 

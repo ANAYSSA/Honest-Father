@@ -5,7 +5,9 @@ const { getDefaultKeybinds, createShortcutRegistrar } = require('./keybinds');
 const { registerAutomaticScreenCapture } = require('./screenCapture');
 const { createReviewOverlay } = require('./reviewOverlay');
 const { reviewAppearanceFromPreferences } = require('./reviewAppearance');
+const { MIN_ANSWER_SIZE, copyDisplays, chooseDisplay, clampBounds, boundsFromPlacement, placementFromBounds } = require('./answerPlacement');
 const shortcutRegistrar = createShortcutRegistrar(globalShortcut, process.platform);
+const answerWindows = new WeakMap();
 
 let mouseEventsIgnored = false;
 let currentReviewOverlay = null;
@@ -16,6 +18,117 @@ function getReviewOverlay() {
 
 const DEFAULT_MAIN_WINDOW_SIZE = { width: 1100, height: 800 };
 const MIN_WINDOW_SIZE = { width: 700, height: 320 };
+
+function createAnswerWindowController(mainWindow) {
+    let passive = false;
+    let settingsBounds = null;
+    let answerBounds = null;
+    const displays = () => copyDisplays(screen.getAllDisplays());
+    const primaryId = () => String(screen.getPrimaryDisplay().id);
+    const persistBounds = () => {
+        const available = displays();
+        const bounds = mainWindow.getBounds();
+        const display = chooseDisplay(available, null, bounds, primaryId());
+        answerBounds = { ...bounds };
+        const placement = placementFromBounds(bounds, display);
+        if (storage.updatePreference('answerPlacement', placement) === false) console.warn('Could not save the answer window position.');
+        mainWindow.webContents.send('answer-placement-changed', placement);
+    };
+    const setBounds = (bounds, display, minimum) => {
+        mainWindow.setMinimumSize(Math.min(minimum.width, display.workArea.width), Math.min(minimum.height, display.workArea.height));
+        mainWindow.setBounds(bounds, false);
+    };
+    const setInteractive = () => {
+        mouseEventsIgnored = false;
+        mainWindow.setFocusable(true);
+        mainWindow.setIgnoreMouseEvents(false);
+        mainWindow.setResizable(true);
+        mainWindow.webContents.send('click-through-toggled', false);
+    };
+    function enter(view) {
+        const nextPassive = view === 'assistant';
+        if (nextPassive === passive) {
+            if (!passive) setInteractive();
+            return;
+        }
+        if (nextPassive) {
+            settingsBounds = { ...mainWindow.getBounds() };
+            const result = boundsFromPlacement(storage.getPreferences().answerPlacement, displays(), answerBounds || settingsBounds, primaryId());
+            setBounds(result.bounds, result.display, MIN_ANSWER_SIZE);
+            answerBounds = { ...result.bounds };
+            passive = true;
+            mouseEventsIgnored = true;
+            mainWindow.setResizable(false);
+            mainWindow.setIgnoreMouseEvents(true);
+            mainWindow.setFocusable(false);
+            // setFocusable(false) alone leaves the existing key window focused on macOS.
+            mainWindow.blur();
+            mainWindow.webContents.send('click-through-toggled', true);
+        } else {
+            persistBounds();
+            passive = false;
+            setInteractive();
+            const available = displays();
+            const desired = settingsBounds || mainWindow.getBounds();
+            const display = chooseDisplay(available, null, desired, primaryId());
+            setBounds(clampBounds(desired, display, MIN_WINDOW_SIZE), display, MIN_WINDOW_SIZE);
+        }
+    }
+    function move(dx, dy) {
+        if (mainWindow.isDestroyed() || (!passive && !mainWindow.isVisible())) return;
+        const original = mainWindow.getBounds();
+        const available = displays();
+        const requested = { ...original, x: original.x + dx, y: original.y + dy };
+        const display = chooseDisplay(available, null, requested, primaryId());
+        const bounds = clampBounds(requested, display, passive ? MIN_ANSWER_SIZE : MIN_WINDOW_SIZE);
+        mainWindow.setBounds(bounds, false);
+        if (passive) persistBounds();
+    }
+    function restoreDisplayLayout() {
+        if (mainWindow.isDestroyed()) return;
+        const available = displays();
+        if (!available.length) return;
+        if (passive) {
+            const result = boundsFromPlacement(
+                storage.getPreferences().answerPlacement,
+                available,
+                answerBounds || mainWindow.getBounds(),
+                primaryId()
+            );
+            setBounds(result.bounds, result.display, MIN_ANSWER_SIZE);
+            persistBounds();
+        } else {
+            const desired = mainWindow.getBounds();
+            const display = chooseDisplay(available, null, desired, primaryId());
+            setBounds(clampBounds(desired, display, MIN_WINDOW_SIZE), display, MIN_WINDOW_SIZE);
+        }
+        mainWindow.webContents.send('answer-displays-changed');
+    }
+    for (const name of ['display-added', 'display-removed', 'display-metrics-changed']) screen.on(name, restoreDisplayLayout);
+    return {
+        enter,
+        move,
+        isPassive: () => passive,
+        getLayout: () => {
+            const available = displays();
+            const result = boundsFromPlacement(
+                storage.getPreferences().answerPlacement,
+                available,
+                answerBounds || mainWindow.getBounds(),
+                primaryId()
+            );
+            return {
+                success: true,
+                displays: available,
+                primaryDisplayId: primaryId(),
+                placement: placementFromBounds(result.bounds, result.display),
+            };
+        },
+        dispose: () => {
+            for (const name of ['display-added', 'display-removed', 'display-metrics-changed']) screen.removeListener(name, restoreDisplayLayout);
+        },
+    };
+}
 
 function createWindow(sendToRenderer, geminiSessionRef) {
     let windowWidth = DEFAULT_MAIN_WINDOW_SIZE.width;
@@ -114,7 +227,10 @@ function updateGlobalShortcuts(keybinds, mainWindow, sendToRenderer, geminiSessi
     const { width, height } = screen.getPrimaryDisplay().workAreaSize;
     const moveIncrement = Math.floor(Math.min(width, height) * 0.1);
     const moveWindow = (dx, dy) => {
-        if (mainWindow.isDestroyed() || !mainWindow.isVisible()) return;
+        if (mainWindow.isDestroyed()) return;
+        const answerWindow = answerWindows.get(mainWindow);
+        if (answerWindow) return answerWindow.move(dx, dy);
+        if (!mainWindow.isVisible()) return;
         const [x, y] = mainWindow.getPosition();
         mainWindow.setPosition(x + dx, y + dy);
     };
@@ -134,9 +250,14 @@ function updateGlobalShortcuts(keybinds, mainWindow, sendToRenderer, geminiSessi
         },
         openVisibilitySettings: () => {
             if (mainWindow.isDestroyed()) return;
-            mouseEventsIgnored = false;
-            mainWindow.setIgnoreMouseEvents(false);
-            mainWindow.webContents.send('click-through-toggled', false);
+            const answerWindow = answerWindows.get(mainWindow);
+            if (answerWindow) answerWindow.enter('test-visibility');
+            else {
+                mouseEventsIgnored = false;
+                mainWindow.setFocusable(true);
+                mainWindow.setIgnoreMouseEvents(false);
+                mainWindow.webContents.send('click-through-toggled', false);
+            }
             sendToRenderer('open-test-visibility');
             if (mainWindow.isMinimized()) mainWindow.restore();
             mainWindow.show();
@@ -144,6 +265,8 @@ function updateGlobalShortcuts(keybinds, mainWindow, sendToRenderer, geminiSessi
         },
         toggleClickThrough: () => {
             if (mainWindow.isDestroyed()) return;
+            // Active answers never capture mouse input, even if the legacy shortcut is pressed.
+            if (answerWindows.get(mainWindow)?.isPassive()) return;
             mouseEventsIgnored = !mouseEventsIgnored;
             mainWindow.setIgnoreMouseEvents(mouseEventsIgnored, { forward: true });
             mainWindow.webContents.send('click-through-toggled', mouseEventsIgnored);
@@ -192,9 +315,15 @@ function disposeGlobalShortcuts() {
 
 function setupWindowIpcHandlers(mainWindow, geminiSessionRef, screenCapture) {
     const reviewOverlay = currentReviewOverlay;
+    const answerWindow = createAnswerWindowController(mainWindow);
+    answerWindows.set(mainWindow, answerWindow);
     let reviewCapture = null;
     const isTrusted = event =>
         !mainWindow.isDestroyed() && event.sender === mainWindow.webContents && event.senderFrame === mainWindow.webContents.mainFrame;
+    ipcMain.handle('get-answer-displays', event => {
+        if (!isTrusted(event)) return { success: false, error: 'Invalid answer layout request.' };
+        return answerWindow.getLayout();
+    });
     const reviewHandlers = {
         'review:begin': () => reviewOverlay.begin(),
         'review:prepare-capture': () => reviewOverlay.prepareCapture(),
@@ -255,11 +384,7 @@ function setupWindowIpcHandlers(mainWindow, geminiSessionRef, screenCapture) {
                 });
             }
 
-            if (!isLiveMode) {
-                mouseEventsIgnored = false;
-                mainWindow.setIgnoreMouseEvents(false);
-                mainWindow.webContents.send('click-through-toggled', false);
-            }
+            answerWindow.enter(view);
         }
     };
     ipcMain.on('view-changed', onViewChanged);
@@ -297,6 +422,7 @@ function setupWindowIpcHandlers(mainWindow, geminiSessionRef, screenCapture) {
         ipcMain.removeHandler('window-minimize');
         ipcMain.removeHandler('toggle-window-visibility');
         ipcMain.removeHandler('screen-capture:diagnostics');
+        ipcMain.removeHandler('get-answer-displays');
         for (const channel of Object.keys(reviewHandlers)) ipcMain.removeHandler(channel);
         reviewCapture?.dispose();
         reviewOverlay?.end();
@@ -304,6 +430,8 @@ function setupWindowIpcHandlers(mainWindow, geminiSessionRef, screenCapture) {
         // Keep the global Quit shortcut available on macOS after the last window closes.
         setShortcutsPaused(false);
         mouseEventsIgnored = false;
+        answerWindow.dispose();
+        answerWindows.delete(mainWindow);
     });
 }
 

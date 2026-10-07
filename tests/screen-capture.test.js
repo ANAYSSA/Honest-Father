@@ -270,15 +270,15 @@ test('the actual window setup installs automatic capture and supplies the matchi
     }
     const ipcMain = new EventEmitter();
     ipcMain.handle = () => {};
+    const screen = new EventEmitter();
+    screen.getPrimaryDisplay = () => ({ id: 11, workAreaSize: { width: 1920, height: 1080 } });
+    screen.getDisplayMatching = () => ({ id: 22 });
     const electron = {
         app: { quit() {} },
         BrowserWindow,
         ipcMain,
         globalShortcut: { register: () => true, unregisterAll() {} },
-        screen: {
-            getPrimaryDisplay: () => ({ id: 11, workAreaSize: { width: 1920, height: 1080 } }),
-            getDisplayMatching: () => ({ id: 22 }),
-        },
+        screen,
         session: {
             defaultSession: {
                 setDisplayMediaRequestHandler(value, handlerOptions) {

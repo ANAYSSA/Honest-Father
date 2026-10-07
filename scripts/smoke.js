@@ -25,6 +25,8 @@ process.on('exit', code => {
     clearTimeout(timeout);
     console.log('Smoke lifecycle: process exit', code);
 });
+const { captureShortcuts, checkPassiveWindow } = require('./smoke-passive-window');
+const smokeShortcuts = captureShortcuts();
 require('../src/index.js');
 app.whenReady().then(async () => {
     try {
@@ -182,6 +184,8 @@ app.whenReady().then(async () => {
         // does not also stop its source. No desktop pixels, audio, OS capture
         // permission, external browser, or provider are used.
         await require('./smoke-visibility')(window);
+        await checkPassiveWindow(window, smokeShortcuts);
+        smokeShortcuts.restore();
         await require('./smoke-history')(window);
         const manager = require('../src/utils/window').getReviewOverlay();
         const display = screen.getPrimaryDisplay();

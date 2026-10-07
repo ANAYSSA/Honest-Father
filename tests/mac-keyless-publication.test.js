@@ -26,7 +26,7 @@ const context = {
     manifestSHA256: 'b'.repeat(64),
     prefix: 'Honest-Father-0.10.4-macos-arm64',
 };
-const inputs = { GH_REPO: 'ANAYSSA/Honest-Father', HF_TAG: context.tag, HF_RUN_ID: context.runId, HF_MANIFEST_SHA: context.manifestSHA256 };
+const inputs = { GH_REPO: 'CyberKotletochka/Honest-Father', HF_TAG: context.tag, HF_RUN_ID: context.runId, HF_MANIFEST_SHA: context.manifestSHA256 };
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const targetEntries = [
     { path: 'Contents', type: 'directory', mode: 0o755 },

@@ -1,10 +1,19 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ANAYSSA/Honest-Father/8732eb477a24aa01cc789ac0df77f20a94a19433/src/assets/logo.png" alt="Honest Father" width="160" height="160" />
+  <img src="https://raw.githubusercontent.com/CyberKotletochka/Honest-Father/8732eb477a24aa01cc789ac0df77f20a94a19433/src/assets/logo.png" alt="Honest Father" width="160" height="160" />
 </p>
 
 <h1 align="center">Honest Father</h1>
 
 Honest Father is an open-source assistant for mock interviews, exam preparation, and learning, forked from Cheating Daddy.
+
+## New in 0.11.2
+
+- The active answer window passes mouse clicks and scrolling to the application underneath and cannot take keyboard focus. Use shortcuts to analyze, browse and scroll answers. Copying remains available in **History**.
+- Move the answer window with **Option + arrows** on Mac or **Alt + arrows** on Windows, even before the first answer or while hidden. Its position is saved. Customized shortcuts are preserved.
+- **Test Visibility → Answer position** lets you choose a monitor, position and size before starting, using a screen preview or nine placement buttons. Settings retain their own readable window size.
+- **Answer text color** applies to text and mathematical notation, with a button to restore the theme color. Text and frame opacity remain independent.
+- **Command + Shift + , / Ctrl + Shift + ,** restores interactive settings; **Return to session** restores the passive answer window. Review marks and History copying are preserved.
+- Updates and release links now point to **CyberKotletochka/Honest-Father**. The app branding and persistent macOS signing identity are unchanged.
 
 ## New in 0.11.1
 
@@ -95,4 +104,4 @@ Published macOS builds use a verified persistent project certificate, but are no
 
 Google quotas apply to the API project; Groq quotas depend on the account and model. The application cannot increase provider quotas. Local AI mode can work without external AI API calls after the required runtime and models are downloaded.
 
-Source and license: https://github.com/ANAYSSA/Honest-Father. Upstream: https://github.com/sohzm/cheating-daddy (GPL-3.0).
+Source and license: https://github.com/CyberKotletochka/Honest-Father. Upstream: https://github.com/sohzm/cheating-daddy (GPL-3.0).

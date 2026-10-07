@@ -320,6 +320,8 @@ test('Restore all settings resets marker appearance and distinguishes window and
         blindMode: true,
         answerTextOpacity: 0,
         answerFrameOpacity: 0,
+        answerTextColor: '#aabbcc',
+        answerPlacement: { displayId: '1', x: 0, y: 100, width: 700, height: 320 },
         emphasizeAnswerLabels: false,
     });
     h.view.resetKeybinds = async () => true;
@@ -331,10 +333,12 @@ test('Restore all settings resets marker appearance and distinguishes window and
     assert.equal(h.saved.blindMode, false);
     assert.equal(h.saved.answerTextOpacity, 100);
     assert.equal(h.saved.answerFrameOpacity, 100);
+    assert.equal(h.saved.answerTextColor, '');
+    assert.equal(h.saved.answerPlacement, null);
     assert.equal(h.saved.emphasizeAnswerLabels, true);
     assert.equal(h.events.length, 1);
     assert.equal(h.events[0].type, 'test-visibility-changed');
-    assert.deepEqual({ ...h.events[0].detail }, { blindMode: false, answerTextOpacity: 100, answerFrameOpacity: 100, emphasizeAnswerLabels: true });
+    assert.deepEqual({ ...h.events[0].detail }, { ...require('../src/utils/testVisibility').DEFAULT_TEST_VISIBILITY });
     assert.equal(h.events[0].bubbles, true);
     assert.equal(h.events[0].composed, true);
     const actions = h.view.getKeybindActions();

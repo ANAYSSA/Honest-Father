@@ -310,7 +310,9 @@ export class CheatingDaddyApp extends LitElement {
             background: var(--bg-surface);
             border-bottom: 1px solid var(--border);
             height: 36px;
-            -webkit-app-region: drag;
+            -webkit-app-region: no-drag;
+            pointer-events: none;
+            user-select: none;
         }
 
         .live-bar-left {
@@ -481,7 +483,7 @@ export class CheatingDaddyApp extends LitElement {
             this._localVersion = await cheatingDaddy.getVersion();
             this.requestUpdate();
 
-            const res = await fetch('https://api.github.com/repos/ANAYSSA/Honest-Father/releases/latest');
+            const res = await fetch('https://api.github.com/repos/CyberKotletochka/Honest-Father/releases/latest');
             if (!res.ok) return;
             const remote = await res.json();
             const remoteVersion = remote.tag_name?.replace(/^v/, '');
@@ -1049,7 +1051,7 @@ export class CheatingDaddyApp extends LitElement {
                             ? html`
                                   <button
                                       class="update-btn"
-                                      @click=${() => this.handleExternalLinkClick('https://github.com/ANAYSSA/Honest-Father/releases/latest')}
+                                      @click=${() => this.handleExternalLinkClick('https://github.com/CyberKotletochka/Honest-Father/releases/latest')}
                                   >
                                       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
                                           <path
@@ -1086,22 +1088,12 @@ export class CheatingDaddyApp extends LitElement {
         return html`
             <div class="live-bar">
                 <div class="live-bar-left">
-                    <button class="live-bar-back" @click=${() => this.handleClose()} title="End session">
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                            <path
-                                fill-rule="evenodd"
-                                d="M12.79 5.23a.75.75 0 0 1-.02 1.06L8.832 10l3.938 3.71a.75.75 0 1 1-1.04 1.08l-4.5-4.25a.75.75 0 0 1 0-1.08l4.5-4.25a.75.75 0 0 1 1.06.02Z"
-                                clip-rule="evenodd"
-                            />
-                        </svg>
-                    </button>
+                    <span class="live-bar-text">Mouse passes through</span>
                 </div>
                 <div class="live-bar-center">${this.testReview ? 'Test Review' : profileLabels[this.selectedProfile] || 'Session'}</div>
                 <div class="live-bar-right">
                     ${this.statusText ? html`<span class="live-bar-text">${this.statusText}</span>` : ''}
                     <span class="live-bar-text">${this.getElapsedTime()}</span>
-                    ${this._isClickThrough ? html`<span class="live-bar-text">[click through]</span>` : ''}
-                    <span class="live-bar-text clickable" @click=${() => this.handleHideToggle()}>[hide]</span>
                 </div>
             </div>
         `;

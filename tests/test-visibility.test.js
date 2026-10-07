@@ -10,6 +10,7 @@ test('answer opacity accepts both endpoints independently and normalizes only in
     assert.deepEqual(
         visibility.normalizeTestVisibility({ blindMode: true, answerTextOpacity: 0, answerFrameOpacity: 100, emphasizeAnswerLabels: false }),
         {
+            ...visibility.DEFAULT_TEST_VISIBILITY,
             blindMode: true,
             answerTextOpacity: 0,
             answerFrameOpacity: 100,
@@ -69,6 +70,7 @@ test('visibility storage preserves zero across reloads, keeps existing settings 
     assert.equal(h.storage.setPreferences({ blindMode: true, answerTextOpacity: 0, answerFrameOpacity: 0, emphasizeAnswerLabels: false }), true);
     const reloaded = storageHarness(h.saved());
     assert.deepEqual(visibility.normalizeTestVisibility(reloaded.storage.getPreferences()), {
+        ...visibility.DEFAULT_TEST_VISIBILITY,
         blindMode: true,
         answerTextOpacity: 0,
         answerFrameOpacity: 0,
@@ -85,6 +87,7 @@ test('visibility storage preserves zero across reloads, keeps existing settings 
 test('legacy malformed visibility values normalize in memory without writing user data', () => {
     const h = storageHarness({ blindMode: 'yes', answerTextOpacity: '0', answerFrameOpacity: 25, emphasizeAnswerLabels: 0 });
     assert.deepEqual(visibility.normalizeTestVisibility(h.storage.getPreferences()), {
+        ...visibility.DEFAULT_TEST_VISIBILITY,
         blindMode: false,
         answerTextOpacity: 100,
         answerFrameOpacity: 25,
@@ -93,11 +96,12 @@ test('legacy malformed visibility values normalize in memory without writing use
     assert.equal(h.writes(), 0);
 });
 
-async function viewHarness({ preferences = {}, save } = {}) {
+async function viewHarness({ preferences = {}, save, displays } = {}) {
     let View;
     const events = [];
     const saved = { ...preferences };
     const calls = [];
+    const ipcListeners = new Map();
     const template = (strings, ...values) => strings.reduce((result, part, index) => result + part + (values[index] ?? ''), '');
     const source = fs
         .readFileSync(path.join(__dirname, '../src/components/views/TestVisibilityView.js'), 'utf8')
@@ -106,6 +110,7 @@ async function viewHarness({ preferences = {}, save } = {}) {
     vm.runInNewContext(source, {
         LitElement: class {
             connectedCallback() {}
+            disconnectedCallback() {}
             dispatchEvent(event) {
                 events.push(event);
             }
@@ -122,6 +127,26 @@ async function viewHarness({ preferences = {}, save } = {}) {
         navigator: { platform: 'MacIntel' },
         window: {
             require(name) {
+                if (name === 'electron')
+                    return {
+                        ipcRenderer: {
+                            on: (channel, listener) => ipcListeners.set(channel, listener),
+                            removeListener: (channel, listener) => {
+                                if (ipcListeners.get(channel) === listener) ipcListeners.delete(channel);
+                            },
+                            invoke: async channel => {
+                                assert.equal(channel, 'get-answer-displays');
+                                return (
+                                    displays || {
+                                        success: true,
+                                        displays: [{ id: '1', label: 'Main display', workArea: { x: 0, y: 0, width: 1440, height: 900 } }],
+                                        primaryDisplayId: '1',
+                                        placement: { displayId: '1', x: 50, y: 50, width: 700, height: 320 },
+                                    }
+                                );
+                            },
+                        },
+                    };
                 assert.equal(name, './utils/testVisibility');
                 return visibility;
             },
@@ -147,7 +172,8 @@ async function viewHarness({ preferences = {}, save } = {}) {
     });
     const view = new View();
     await view._loadPreferences();
-    return { view, events, calls, saved };
+    await view._loadDisplays();
+    return { view, events, calls, saved, ipcListeners };
 }
 
 test('visibility settings preview performs no writes and saved zero emits the actual normalized preferences', async () => {
@@ -163,10 +189,145 @@ test('visibility settings preview performs no writes and saved zero emits the ac
     assert.equal(h.saved.answerTextOpacity, 0);
     assert.equal(h.events.length, 2);
     assert.equal(h.events[1].type, 'test-visibility-changed');
-    assert.deepEqual({ ...h.events[1].detail }, { blindMode: true, answerTextOpacity: 0, answerFrameOpacity: 40, emphasizeAnswerLabels: true });
+    assert.deepEqual(
+        { ...h.events[1].detail },
+        { ...visibility.DEFAULT_TEST_VISIBILITY, blindMode: true, answerTextOpacity: 0, answerFrameOpacity: 40, emphasizeAnswerLabels: true }
+    );
     assert.equal(h.events[1].bubbles, true);
     assert.equal(h.events[1].composed, true);
     assert.doesNotMatch(h.view.render(), /Screen ready · Practice session/);
+});
+
+test('answer colors and placement validate exact safe values and preserve zero position', () => {
+    const placement = { displayId: '-42', x: 0, y: 100, width: 320, height: 120 };
+    assert.equal(visibility.isAnswerPlacement(null), true);
+    assert.equal(visibility.isAnswerPlacement(placement), true);
+    visibility.validateTestVisibilityUpdate({ answerTextColor: '#AABBCC', answerPlacement: placement });
+    const prefs = visibility.normalizeTestVisibility({ answerTextColor: '#AABBCC', answerPlacement: placement });
+    assert.equal(prefs.answerTextColor, '#aabbcc');
+    assert.deepEqual(prefs.answerPlacement, placement);
+    assert.notEqual(prefs.answerPlacement, placement);
+    for (const color of ['white', '#fff', '#123456;display:none', null, 123]) {
+        assert.equal(visibility.isAnswerTextColor(color), false);
+        assert.throws(() => visibility.validateTestVisibilityUpdate({ answerTextColor: color }), /valid answer text color/);
+        assert.equal(visibility.normalizeTestVisibility({ answerTextColor: color }).answerTextColor, '');
+    }
+    for (const invalid of [
+        [],
+        {},
+        { ...placement, x: -1 },
+        { ...placement, y: 101 },
+        { ...placement, y: NaN },
+        { ...placement, width: 319 },
+        { ...placement, width: 7681 },
+        { ...placement, height: 119 },
+        { ...placement, height: 4321 },
+        { ...placement, width: 800.5 },
+        { ...placement, displayId: '' },
+        { ...placement, displayId: 42 },
+        { ...placement, displayId: '<img>' },
+        { ...placement, unsupported: true },
+    ]) {
+        assert.equal(visibility.isAnswerPlacement(invalid), false);
+        assert.throws(() => visibility.validateTestVisibilityUpdate({ answerPlacement: invalid }), /valid answer position/);
+        assert.equal(visibility.normalizeTestVisibility({ answerPlacement: invalid }).answerPlacement, null);
+    }
+});
+
+test('color and placement persist together, normalize casing and reject invalid batches without changing data', () => {
+    const h = storageHarness({ customPrompt: 'Keep' });
+    const placement = { displayId: '1', x: 0, y: 0, width: 700, height: 320 };
+    assert.equal(h.storage.setPreferences({ answerPlacement: placement, answerTextColor: '#FFAABB' }), true);
+    const reloaded = storageHarness(h.saved());
+    assert.equal(reloaded.storage.getPreferences().answerTextColor, '#ffaabb');
+    assert.deepEqual({ ...reloaded.storage.getPreferences().answerPlacement }, placement);
+    const before = reloaded.saved();
+    assert.throws(() => reloaded.storage.setPreferences({ answerPlacement: { ...placement, x: 200 }, answerTextColor: '#000000' }));
+    assert.deepEqual(reloaded.saved(), before);
+    assert.equal(reloaded.writes(), 0);
+});
+
+test('display preview saves configured positions without moving a native window or contacting AI', async () => {
+    const h = await viewHarness();
+    assert.deepEqual({ ...h.view.getPlacement() }, { displayId: '1', x: 50, y: 50, width: 700, height: 320 });
+    assert.equal(h.calls.length, 0);
+    await h.view.savePlacement({ x: 0, y: 100 });
+    assert.deepEqual({ ...h.saved.answerPlacement }, { displayId: '1', x: 0, y: 100, width: 700, height: 320 });
+    let prevented = false;
+    await h.view.movePreview({
+        key: 'ArrowRight',
+        preventDefault() {
+            prevented = true;
+        },
+    });
+    assert.equal(prevented, true);
+    assert.equal(h.saved.answerPlacement.x, 5);
+    await h.view.selectPosition({
+        currentTarget: { getBoundingClientRect: () => ({ left: 0, top: 0, width: 144, height: 90 }) },
+        clientX: 72,
+        clientY: 45,
+    });
+    assert.equal(h.saved.answerPlacement.x, 50);
+    assert.equal(h.saved.answerPlacement.y, 50);
+    await h.view.savePreference('answerTextColor', '#12aabb');
+    assert.match(h.view.render(), /--preview-answer-color: #12aabb/);
+    await h.view.savePreference('answerTextColor', '');
+    assert.match(h.view.render(), /Theme default/);
+});
+
+test('preview falls back when a saved monitor is disconnected and reports inventory failure honestly', async () => {
+    const h = await viewHarness({ preferences: { answerPlacement: { displayId: 'gone', x: 0, y: 100, width: 700, height: 320 } } });
+    assert.equal(h.view.getPlacement().displayId, '1');
+    assert.equal(h.view.getPlacement().x, 0);
+    assert.equal(h.calls.length, 0);
+    const unavailable = await viewHarness({ displays: { success: false } });
+    assert.match(unavailable.view.render(), /Display preview is unavailable/);
+    assert.equal(unavailable.calls.length, 0);
+});
+
+test('disconnected monitor preview uses the native resolved display even when it is not primary', async () => {
+    const h = await viewHarness({
+        preferences: { answerPlacement: { displayId: 'gone', x: 0, y: 100, width: 700, height: 320 } },
+        displays: {
+            success: true,
+            displays: [
+                { id: '1', label: 'Primary', workArea: { x: 0, y: 0, width: 1440, height: 900 } },
+                { id: '2', label: 'External', workArea: { x: 1440, y: 0, width: 1920, height: 1080 } },
+            ],
+            primaryDisplayId: '1',
+            placement: { displayId: '2', x: 0, y: 100, width: 700, height: 320 },
+        },
+    });
+    assert.equal(h.view.getPlacement().displayId, '2');
+    assert.equal(h.view.getPlacement().x, 0);
+    assert.equal(h.view.getPlacement().y, 100);
+    assert.equal(h.calls.length, 0);
+    await h.view.savePlacement({ x: 100 });
+    assert.equal(h.saved.answerPlacement.displayId, '2');
+});
+
+test('open placement settings refresh after monitor changes and remove the listener on exit', async () => {
+    const displays = {
+        success: true,
+        displays: [
+            { id: '1', label: 'Primary', workArea: { x: 0, y: 0, width: 1440, height: 900 } },
+            { id: '2', label: 'External', workArea: { x: 1440, y: 0, width: 1920, height: 1080 } },
+        ],
+        primaryDisplayId: '1',
+        placement: { displayId: '2', x: 0, y: 100, width: 700, height: 320 },
+    };
+    const h = await viewHarness({ preferences: { answerPlacement: displays.placement }, displays });
+    h.view.connectedCallback();
+    await Promise.resolve();
+    assert.equal(h.view.getPlacement().displayId, '2');
+    displays.displays = [displays.displays[0]];
+    displays.placement = { ...displays.placement, displayId: '1' };
+    await h.ipcListeners.get('answer-displays-changed')();
+    assert.equal(h.view._displays.length, 1);
+    assert.equal(h.view.getPlacement().displayId, '1');
+    assert.equal(h.calls.length, 0);
+    h.view.disconnectedCallback();
+    assert.equal(h.ipcListeners.size, 0);
 });
 
 test('visibility settings serialize writes and avoid announcing or retaining a failed update', async () => {

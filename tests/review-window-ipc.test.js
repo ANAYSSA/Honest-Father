@@ -5,15 +5,22 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 
-function harness({ platform = 'win32', permissionStatus = 'unknown', permissionThrows = false } = {}) {
+function harness({ platform = 'win32', permissionStatus = 'unknown', permissionThrows = false, preferences = {} } = {}) {
     const handlers = new Map();
     const calls = [];
     const rendererMessages = [];
     const mouseEventStates = [];
+    const focusableStates = [];
     const endRequests = [];
     const ipcMain = new EventEmitter();
     ipcMain.handle = (channel, handler) => handlers.set(channel, handler);
     ipcMain.removeHandler = channel => handlers.delete(channel);
+    const screen = new EventEmitter();
+    screen.displays = [
+        { id: 1, label: 'Built-in', workArea: { x: 0, y: 25, width: 1920, height: 1055 }, workAreaSize: { width: 1920, height: 1055 } },
+    ];
+    screen.getAllDisplays = () => screen.displays;
+    screen.getPrimaryDisplay = () => screen.displays[0];
     const sessionRef = { current: null };
     const failure = { code: 'source_enumeration_failed', error: 'Failed to get sources.', stage: 'sources', at: Date.now() };
     let active = false;
@@ -43,6 +50,7 @@ function harness({ platform = 'win32', permissionStatus = 'unknown', permissionT
             this.visible = true;
             this.minimized = false;
             this.focused = false;
+            this.bounds = { x: 100, y: 100, width: 1100, height: 800 };
             this.webContents = new EventEmitter();
             this.webContents.mainFrame = {};
             this.webContents.send = (...args) => rendererMessages.push(args);
@@ -76,6 +84,25 @@ function harness({ platform = 'win32', permissionStatus = 'unknown', permissionT
             this.focused = true;
             calls.push('focus-main');
         }
+        blur() {
+            this.focused = false;
+        }
+        getBounds() {
+            return { ...this.bounds };
+        }
+        setBounds(bounds) {
+            this.bounds = { ...bounds };
+        }
+        setMinimumSize(width, height) {
+            this.minimumSize = [width, height];
+        }
+        setResizable(value) {
+            this.resizable = value;
+        }
+        setFocusable(value) {
+            this.focusable = value;
+            focusableStates.push(value);
+        }
         setIgnoreMouseEvents(ignored) {
             mouseEventStates.push(ignored);
         }
@@ -101,7 +128,7 @@ function harness({ platform = 'win32', permissionStatus = 'unknown', permissionT
                     BrowserWindow: Window,
                     globalShortcut: {},
                     ipcMain,
-                    screen: { getPrimaryDisplay: () => ({ workAreaSize: { width: 1920, height: 1080 } }) },
+                    screen,
                     session: { defaultSession: {} },
                     desktopCapturer: {},
                     systemPreferences: {
@@ -112,7 +139,16 @@ function harness({ platform = 'win32', permissionStatus = 'unknown', permissionT
                         },
                     },
                 };
-            if (name === '../storage') return { getKeybinds: () => null, getPreferences: () => ({}) };
+            if (name === '../storage')
+                return {
+                    getKeybinds: () => null,
+                    getPreferences: () => preferences,
+                    updatePreference: (key, value) => {
+                        preferences[key] = value;
+                        return true;
+                    },
+                };
+            if (name === './answerPlacement') return require('../src/utils/answerPlacement');
             if (name === './reviewAppearance') return require('../src/utils/reviewAppearance');
             if (name === './screenCapture') return { registerAutomaticScreenCapture: () => ({ getLastFailure: () => ({ ...failure }) }) };
             if (name === './reviewOverlay') return { createReviewOverlay: () => overlay };
@@ -140,7 +176,21 @@ function harness({ platform = 'win32', permissionStatus = 'unknown', permissionT
     });
     const window = module.exports.createWindow((...args) => rendererMessages.push(args), sessionRef);
     const trusted = { sender: window.webContents, senderFrame: window.webContents.mainFrame };
-    return { window, handlers, calls, endRequests, overlay, trusted, actions, ipcMain, rendererMessages, mouseEventStates };
+    return {
+        window,
+        handlers,
+        calls,
+        endRequests,
+        overlay,
+        trusted,
+        actions,
+        ipcMain,
+        rendererMessages,
+        mouseEventStates,
+        focusableStates,
+        preferences,
+        screen,
+    };
 }
 
 test('review IPC rejects another window and a child frame before changing main visibility', async () => {
@@ -174,7 +224,7 @@ for (const platform of ['darwin', 'win32']) {
     });
 }
 
-test('only the main frame can restore click-through via view changes and returning to a session preserves the reset state', () => {
+test('only the main frame can restore interaction and returning to a session enforces pass-through', () => {
     const h = harness();
     h.actions.toggleClickThrough();
     for (const event of [{ sender: {} }, { sender: h.window.webContents, senderFrame: {} }, { sender: h.window.webContents }]) {
@@ -193,6 +243,60 @@ test('only the main frame can restore click-through via view changes and returni
         ['click-through-toggled', true],
     ]);
     assert.deepEqual(h.calls, [], 'Opening settings does not end capture or change Review marks');
+});
+
+for (const platform of ['darwin', 'win32']) {
+    test(`assistant is mouse-transparent, unfocusable, and keyboard-movable while empty or hidden on ${platform}`, () => {
+        const h = harness({ platform });
+        h.window.focused = true;
+        h.ipcMain.emit('view-changed', h.trusted, 'assistant');
+        assert.equal(h.window.focusable, false);
+        assert.equal(h.window.focused, false, 'Starting a session releases existing keyboard focus, including on macOS');
+        assert.equal(h.window.resizable, false);
+        assert.deepEqual(h.mouseEventStates, [true]);
+        h.actions.toggleClickThrough();
+        assert.deepEqual(h.mouseEventStates, [true], 'The legacy toggle cannot make an answer intercept clicks');
+        const previous = h.window.getBounds();
+        h.window.visible = false;
+        h.actions.moveDown();
+        assert.equal(h.window.visible, false, 'Positioning does not reveal or focus an invisible answer');
+        assert.ok(h.window.bounds.y > previous.y);
+        assert.equal(h.preferences.answerPlacement.displayId, '1');
+        const moved = h.window.getBounds();
+        h.actions.openVisibilitySettings();
+        assert.equal(h.window.focusable, true);
+        assert.equal(h.window.focused, true);
+        assert.equal(h.mouseEventStates.at(-1), false);
+        assert.equal(h.window.bounds.y, 100, 'Settings retain their ordinary full-size window bounds');
+        h.ipcMain.emit('view-changed', h.trusted, 'test-visibility');
+        h.ipcMain.emit('view-changed', h.trusted, 'assistant');
+        assert.deepEqual(h.window.getBounds(), moved, 'Returning restores the answer position');
+        assert.equal(h.window.focused, false);
+        assert.equal(h.window.focusable, false);
+        assert.equal(h.mouseEventStates.at(-1), true);
+    });
+}
+
+test('answer placement IPC is main-frame only and disconnected monitors recover onto a connected screen', () => {
+    const h = harness({ preferences: { answerPlacement: { displayId: '2', x: 100, y: 100, width: 640, height: 240 } } });
+    h.screen.displays.push({ id: 2, label: 'External', workArea: { x: -1600, y: 0, width: 1600, height: 900 } });
+    const handler = h.handlers.get('get-answer-displays');
+    assert.equal(handler({ sender: h.window.webContents, senderFrame: {} }).success, false);
+    const layout = handler(h.trusted);
+    assert.equal(layout.success, true);
+    assert.equal(layout.displays.length, 2);
+    assert.equal(layout.placement.displayId, '2');
+    h.ipcMain.emit('view-changed', h.trusted, 'assistant');
+    assert.deepEqual(h.window.getBounds(), { x: -640, y: 660, width: 640, height: 240 });
+    h.screen.displays.pop();
+    h.screen.emit('display-removed');
+    assert.deepEqual(h.window.getBounds(), { x: 1280, y: 840, width: 640, height: 240 });
+    assert.equal(h.preferences.answerPlacement.displayId, '1');
+    for (let i = 0; i < 30; i++) h.actions.moveRight();
+    assert.equal(h.window.bounds.x, 1280, 'Repeated shortcuts cannot move the answer off-screen');
+    h.window.emit('closed');
+    assert.equal(h.screen.listenerCount('display-removed'), 0);
+    assert.equal(h.screen.listenerCount('display-metrics-changed'), 0);
 });
 
 for (const platform of ['darwin', 'win32']) {

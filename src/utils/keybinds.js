@@ -20,10 +20,10 @@ function getDefaultKeybinds(platform = process.platform) {
     const isMac = platform === 'darwin';
     const primary = isMac ? 'Cmd' : 'Ctrl';
     return {
-        moveUp: isMac ? 'Alt+Up' : 'Ctrl+Up',
-        moveDown: isMac ? 'Alt+Down' : 'Ctrl+Down',
-        moveLeft: isMac ? 'Alt+Left' : 'Ctrl+Left',
-        moveRight: isMac ? 'Alt+Right' : 'Ctrl+Right',
+        moveUp: 'Alt+Up',
+        moveDown: 'Alt+Down',
+        moveLeft: 'Alt+Left',
+        moveRight: 'Alt+Right',
         toggleVisibility: `${primary}+\\`,
         toggleReviewMarks: `${primary}+Shift+\\`,
         openVisibilitySettings: `${primary}+Shift+,`,
@@ -105,6 +105,22 @@ function normalizeKeybinds(input, platform = process.platform) {
     const keybinds = getDefaultKeybinds(platform);
     for (const action of Object.keys(keybinds)) {
         if (input && Object.hasOwn(input, action)) keybinds[action] = normalizeAccelerator(input[action], platform);
+    }
+    if (platform === 'win32' && input) {
+        const movement = [
+            ['moveUp', 'Up'],
+            ['moveDown', 'Down'],
+            ['moveLeft', 'Left'],
+            ['moveRight', 'Right'],
+        ];
+        const isLegacyDefaults = movement.every(([action, direction]) => Object.hasOwn(input, action) && keybinds[action] === `Ctrl+${direction}`);
+        for (const [action, direction] of movement) {
+            if (!isLegacyDefaults && Object.hasOwn(input, action)) continue;
+            const replacement = `Alt+${direction}`;
+            const occupied = Object.entries(keybinds).some(([otherAction, accelerator]) => otherAction !== action && accelerator === replacement);
+            // Preserve a custom action already using Alt+Arrow rather than dropping its shortcut.
+            keybinds[action] = occupied ? `Ctrl+${direction}` : replacement;
+        }
     }
     // Keep existing custom bindings when adding an action to older settings.
     // Explicitly saved bindings still go through ordinary conflict validation.

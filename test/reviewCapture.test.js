@@ -484,7 +484,8 @@ test('native frame IPC rejects other windows and child frames before constructin
     ipcMain.handle = (channel, handler) => handlers.set(channel, handler);
     ipcMain.removeHandler = channel => handlers.delete(channel);
     const calls = [];
-    const screen = { getPrimaryDisplay: () => ({ workAreaSize: { width: 1920, height: 1080 } }) };
+    const screen = new EventEmitter();
+    screen.getPrimaryDisplay = () => ({ id: 1, workAreaSize: { width: 1920, height: 1080 } });
     const desktopCapturer = {};
     const overlay = { isActive: () => false, end() {} };
     const provider = {
@@ -525,6 +526,7 @@ test('native frame IPC rejects other windows and child frames before constructin
                 return { app: {}, BrowserWindow: Window, ipcMain, screen, desktopCapturer, globalShortcut: {}, session: { defaultSession: {} } };
             if (name === '../storage') return { getKeybinds: () => null, getPreferences: () => ({}) };
             if (name === './reviewAppearance') return require('../src/utils/reviewAppearance');
+            if (name === './answerPlacement') return require('../src/utils/answerPlacement');
             if (name === './reviewOverlay') return { createReviewOverlay: () => overlay };
             if (name === './screenCapture') return { registerAutomaticScreenCapture: () => ({}) };
             if (name === './keybinds')

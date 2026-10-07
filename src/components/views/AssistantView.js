@@ -9,6 +9,8 @@ export class AssistantView extends LitElement {
             height: 100%;
             display: flex;
             flex-direction: column;
+            pointer-events: none;
+            user-select: none;
         }
 
         * {
@@ -69,14 +71,14 @@ export class AssistantView extends LitElement {
             background: var(--bg-app);
             padding: var(--space-sm) var(--space-md);
             scroll-behavior: smooth;
-            user-select: text;
-            cursor: text;
-            color: var(--text-primary);
+            user-select: none;
+            cursor: default;
+            color: var(--answer-text-color, var(--text-primary));
         }
 
         .response-container * {
-            user-select: text;
-            cursor: text;
+            user-select: none;
+            cursor: default;
         }
 
         .response-container a {
@@ -96,7 +98,7 @@ export class AssistantView extends LitElement {
         .response-container h5,
         .response-container h6 {
             margin: 1em 0 0.5em 0;
-            color: var(--text-primary);
+            color: var(--answer-text-color, var(--text-primary));
             font-weight: var(--font-weight-semibold);
         }
 
@@ -119,14 +121,14 @@ export class AssistantView extends LitElement {
 
         .response-container p {
             margin: 0.6em 0;
-            color: var(--text-primary);
+            color: var(--answer-text-color, var(--text-primary));
         }
 
         .response-container ul,
         .response-container ol {
             margin: 0.6em 0;
             padding-left: 1.5em;
-            color: var(--text-primary);
+            color: var(--answer-text-color, var(--text-primary));
         }
 
         .response-container li {
@@ -164,7 +166,7 @@ export class AssistantView extends LitElement {
         }
 
         .response-container a {
-            color: var(--accent);
+            color: var(--answer-text-color, var(--accent));
             text-decoration: underline;
             text-underline-offset: 2px;
         }
@@ -270,6 +272,9 @@ export class AssistantView extends LitElement {
             gap: var(--space-sm);
             padding: var(--space-md);
             background: var(--bg-app);
+            color: var(--text-muted);
+            font-size: var(--font-size-xs);
+            justify-content: center;
         }
 
         .input-bar-inner {
@@ -686,6 +691,9 @@ export class AssistantView extends LitElement {
         this.toggleAttribute('blind-mode', this.visibilityPreferences.blindMode);
         this.style.setProperty('--answer-text-opacity', this.visibilityPreferences.answerTextOpacity / 100);
         this.style.setProperty('--answer-frame-opacity', this.visibilityPreferences.answerFrameOpacity / 100);
+        const textColor = normalizeTestVisibility(this.visibilityPreferences).answerTextColor;
+        if (textColor) this.style.setProperty('--answer-text-color', textColor);
+        else this.style.removeProperty('--answer-text-color');
         if (changedProperties.has('responses') || changedProperties.has('currentResponseIndex') || changedProperties.has('visibilityPreferences')) {
             this.updateResponseContent();
         }
@@ -728,61 +736,13 @@ export class AssistantView extends LitElement {
                 hasMultipleResponses
                     ? html`
                           <div class="response-nav">
-                              <button
-                                  class="nav-btn"
-                                  @click=${this.navigateToPreviousResponse}
-                                  ?disabled=${this.currentResponseIndex <= 0}
-                                  title="Previous response"
-                              >
-                                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                                      <path
-                                          fill-rule="evenodd"
-                                          d="M11.78 5.22a.75.75 0 0 1 0 1.06L8.06 10l3.72 3.72a.75.75 0 1 1-1.06 1.06l-4.25-4.25a.75.75 0 0 1 0-1.06l4.25-4.25a.75.75 0 0 1 1.06 0Z"
-                                          clip-rule="evenodd"
-                                      />
-                                  </svg>
-                              </button>
                               <span class="response-counter">${this.currentResponseIndex + 1} of ${this.responses.length}</span>
-                              <button
-                                  class="nav-btn"
-                                  @click=${this.navigateToNextResponse}
-                                  ?disabled=${this.currentResponseIndex >= this.responses.length - 1}
-                                  title="Next response"
-                              >
-                                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                                      <path
-                                          fill-rule="evenodd"
-                                          d="M8.22 5.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L11.94 10 8.22 6.28a.75.75 0 0 1 0-1.06Z"
-                                          clip-rule="evenodd"
-                                      />
-                                  </svg>
-                              </button>
                           </div>
                       `
                     : ''
             }
 
-            <div class="input-bar">
-                <div class="input-bar-inner">
-                    <input type="text" id="textInput" placeholder="Type a message..." @keydown=${this.handleTextKeydown} />
-                </div>
-                <button class="analyze-btn ${this.isAnalyzing ? 'analyzing' : ''}" @click=${this.handleScreenAnswer}>
-                    <canvas class="analyze-canvas"></canvas>
-                    <span class="analyze-btn-content">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24">
-                            <path
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                stroke-width="2"
-                                d="M13 3v7h6l-8 11v-7H5z"
-                            />
-                        </svg>
-                        Analyze Screen
-                    </span>
-                </button>
-            </div>
+            <div class="input-bar">Use keyboard shortcuts to analyze, browse and scroll answers.</div>
         `;
     }
 }

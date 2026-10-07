@@ -6,7 +6,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 
-const repository = 'ANAYSSA/Honest-Father';
+const repository = 'CyberKotletochka/Honest-Father';
 const hashPattern = /^[a-f0-9]{64}$/;
 const command = (root, binary, args) => execFileSync(binary, args, { cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }).trim();
 const fileHash = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');

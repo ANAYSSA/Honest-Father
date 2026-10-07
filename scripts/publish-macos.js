@@ -15,7 +15,7 @@ assert.equal(tag, `v${version}`, 'The tag must match the packaged version');
 assert.match(runId || '', /^\d+$/, 'Supply the successful GitHub build run ID');
 const root = path.resolve(__dirname, '..');
 const command = (name, args) => execFileSync(name, args, { cwd: root, encoding: 'utf8' }).trim();
-const repository = 'ANAYSSA/Honest-Father';
+const repository = 'CyberKotletochka/Honest-Father';
 const sourceSha = command('git', ['rev-parse', `${tag}^{commit}`]);
 assert.equal(command('git', ['rev-parse', 'HEAD']), sourceSha, 'Build and publish from the exact release tag');
 assert.equal(command('git', ['status', '--porcelain']), '', 'Tracked release source must be clean');

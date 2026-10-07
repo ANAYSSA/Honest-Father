@@ -1,7 +1,9 @@
 import { html, css, LitElement } from '../../assets/lit-core-2.7.4.min.js';
 import { unifiedPageStyles } from './sharedPageStyles.js';
 
-const { DEFAULT_TEST_VISIBILITY, normalizeTestVisibility, validateTestVisibilityUpdate } = window.require('./utils/testVisibility');
+const { DEFAULT_TEST_VISIBILITY, ANSWER_PLACEMENT_LIMITS, normalizeTestVisibility, validateTestVisibilityUpdate, isAnswerPlacement } =
+    window.require('./utils/testVisibility');
+const { ipcRenderer } = window.require('electron');
 
 export class TestVisibilityView extends LitElement {
     static properties = {
@@ -9,6 +11,9 @@ export class TestVisibilityView extends LitElement {
         _loaded: { state: true },
         _saving: { state: true },
         _error: { state: true },
+        _displays: { state: true },
+        _placementFallback: { state: true },
+        _displayError: { state: true },
     };
 
     static styles = [
@@ -67,7 +72,7 @@ export class TestVisibilityView extends LitElement {
             }
             .preview-answer {
                 position: relative;
-                color: var(--text-primary);
+                color: var(--preview-answer-color, var(--text-primary));
                 opacity: var(--preview-text-opacity);
                 line-height: 1.6;
             }
@@ -92,9 +97,92 @@ export class TestVisibilityView extends LitElement {
             .save-error {
                 color: var(--danger);
             }
-            input:focus-visible {
+            input:focus-visible,
+            button:focus-visible {
                 outline: 2px solid var(--accent);
                 outline-offset: 3px;
+            }
+            .color-row,
+            .placement-tools,
+            .size-row {
+                display: flex;
+                align-items: center;
+                gap: var(--space-sm);
+                flex-wrap: wrap;
+            }
+            .color-row input[type='color'] {
+                width: 48px;
+                height: 36px;
+                padding: 3px;
+                border: 1px solid var(--border);
+                border-radius: var(--radius-sm);
+                background: var(--bg-elevated);
+                cursor: pointer;
+            }
+            .compact-button {
+                width: auto;
+                cursor: pointer;
+            }
+            .position-layout {
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) auto;
+                align-items: center;
+                gap: var(--space-md);
+            }
+            .screen-map {
+                display: block;
+                position: relative;
+                width: 100%;
+                padding: 0;
+                overflow: hidden;
+                background: var(--bg-app);
+                border: 1px solid var(--border-strong);
+                border-radius: var(--radius-sm);
+                cursor: crosshair;
+            }
+            .screen-map:disabled {
+                cursor: default;
+            }
+            .screen-answer {
+                position: absolute;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                border: 1px solid var(--accent);
+                border-radius: 4px;
+                color: var(--text-primary);
+                background: var(--bg-elevated);
+                font-size: var(--font-size-xs);
+                min-height: 8px;
+                pointer-events: none;
+                overflow: hidden;
+            }
+            .anchor-grid {
+                display: grid;
+                grid-template-columns: repeat(3, 32px);
+                gap: 4px;
+            }
+            .anchor-grid button {
+                width: 32px;
+                height: 32px;
+                padding: 0;
+                cursor: pointer;
+            }
+            .anchor-grid button[aria-pressed='true'] {
+                border-color: var(--accent);
+                box-shadow: 0 0 0 1px var(--accent);
+            }
+            .size-row label {
+                display: flex;
+                align-items: center;
+                gap: var(--space-sm);
+            }
+            .size-row input {
+                width: 96px;
+            }
+            .placement-tools select {
+                flex: 1;
+                min-width: 180px;
             }
         `,
     ];
@@ -107,11 +195,38 @@ export class TestVisibilityView extends LitElement {
         this._saving = 0;
         this._error = '';
         this._saveQueue = Promise.resolve();
+        this._displays = [];
+        this._placementFallback = { displayId: 'primary', x: 50, y: 50, width: 700, height: 320 };
+        this._displayError = '';
+        this._onDisplaysChanged = () => this._loadDisplays();
     }
 
     connectedCallback() {
         super.connectedCallback();
         if (!this._loaded) this._loadPreferences();
+        ipcRenderer.on('answer-displays-changed', this._onDisplaysChanged);
+        this._loadDisplays();
+    }
+
+    disconnectedCallback() {
+        ipcRenderer.removeListener('answer-displays-changed', this._onDisplaysChanged);
+        super.disconnectedCallback();
+    }
+
+    async _loadDisplays() {
+        try {
+            const result = await ipcRenderer.invoke('get-answer-displays');
+            if (!result?.success || !Array.isArray(result.displays) || !result.displays.length) {
+                throw new Error('Could not read connected displays.');
+            }
+            this._displays = result.displays;
+            this._primaryDisplayId = result.primaryDisplayId;
+            if (result.placement && isAnswerPlacement(result.placement)) this._placementFallback = { ...result.placement };
+            else this._placementFallback = { ...this._placementFallback, displayId: result.primaryDisplayId };
+            this._displayError = '';
+        } catch {
+            this._displayError = 'Display preview is unavailable. Reopen these settings to try again.';
+        }
     }
 
     async _loadPreferences() {
@@ -172,6 +287,152 @@ export class TestVisibilityView extends LitElement {
         return pending;
     }
 
+    getPlacement() {
+        const placement = normalizeTestVisibility(this.preferences).answerPlacement || this._placementFallback;
+        const display =
+            this._displays.find(item => item.id === placement.displayId) ||
+            this._displays.find(item => item.id === this._placementFallback.displayId) ||
+            this._displays.find(item => item.id === this._primaryDisplayId) ||
+            this._displays[0];
+        return { ...placement, displayId: display?.id || placement.displayId };
+    }
+
+    savePlacement(update) {
+        return this.savePreference('answerPlacement', { ...this.getPlacement(), ...update });
+    }
+
+    selectPosition(event) {
+        if (!this._loaded || !this._displays.length || event.detail === 0) return;
+        const placement = this.getPlacement();
+        const display = this._displays.find(item => item.id === placement.displayId);
+        const rect = event.currentTarget.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+        const widthRatio = Math.min(1, placement.width / display.workArea.width);
+        const heightRatio = Math.min(1, placement.height / display.workArea.height);
+        const clamp = value => Math.round(Math.max(0, Math.min(100, value)));
+        const x = widthRatio < 1 ? clamp((((event.clientX - rect.left) / rect.width - widthRatio / 2) / (1 - widthRatio)) * 100) : 50;
+        const y = heightRatio < 1 ? clamp((((event.clientY - rect.top) / rect.height - heightRatio / 2) / (1 - heightRatio)) * 100) : 50;
+        return this.savePlacement({ x, y });
+    }
+
+    movePreview(event) {
+        const offsets = { ArrowLeft: [-5, 0], ArrowRight: [5, 0], ArrowUp: [0, -5], ArrowDown: [0, 5] };
+        const offset = offsets[event.key];
+        if (!offset || !this._loaded || !this._displays.length) return;
+        event.preventDefault();
+        const placement = this.getPlacement();
+        return this.savePlacement({
+            x: Math.max(0, Math.min(100, placement.x + offset[0])),
+            y: Math.max(0, Math.min(100, placement.y + offset[1])),
+        });
+    }
+
+    renderPlacement() {
+        const placement = this.getPlacement();
+        const display = this._displays.find(item => item.id === placement.displayId);
+        const width = display ? Math.min(100, (placement.width / display.workArea.width) * 100) : 50;
+        const height = display ? Math.min(100, (placement.height / display.workArea.height) * 100) : 40;
+        const anchors = [
+            [0, 0, '↖', 'Top left'],
+            [50, 0, '↑', 'Top center'],
+            [100, 0, '↗', 'Top right'],
+            [0, 50, '←', 'Center left'],
+            [50, 50, '•', 'Center'],
+            [100, 50, '→', 'Center right'],
+            [0, 100, '↙', 'Bottom left'],
+            [50, 100, '↓', 'Bottom center'],
+            [100, 100, '↘', 'Bottom right'],
+        ];
+        return html`
+            <section class="surface form-row">
+                <div class="surface-title">Answer position on screen</div>
+                <div class="form-help">Choose where the answer will appear before starting. Click the screen preview or choose a position.</div>
+                <div class="placement-tools">
+                    <label class="form-label" for="answerDisplay">Display</label>
+                    <select
+                        id="answerDisplay"
+                        class="control"
+                        .value=${placement.displayId}
+                        ?disabled=${!this._loaded || !this._displays.length}
+                        @change=${event => this.savePlacement({ displayId: event.target.value })}
+                    >
+                        ${this._displays.map(item => html`<option value=${item.id}>${item.label} · ${item.workArea.width} × ${item.workArea.height}</option>`)}
+                    </select>
+                </div>
+                <div class="position-layout">
+                    <button
+                        class="screen-map"
+                        type="button"
+                        style=${`aspect-ratio: ${display ? display.workArea.width / display.workArea.height : 16 / 9}; max-width: ${Math.round(240 * (display ? display.workArea.width / display.workArea.height : 16 / 9))}px;`}
+                        aria-label="Answer position preview. Click to position the answer, or use the arrow keys."
+                        ?disabled=${!this._loaded || !display}
+                        @click=${this.selectPosition}
+                        @keydown=${this.movePreview}
+                    >
+                        <span
+                            class="screen-answer"
+                            style=${`width: ${width}%; height: ${height}%; left: ${((100 - width) * placement.x) / 100}%; top: ${((100 - height) * placement.y) / 100}%;`}
+                            >Answer</span
+                        >
+                    </button>
+                    <div class="anchor-grid" aria-label="Answer position presets">
+                        ${anchors.map(
+                            ([x, y, symbol, label]) => html`
+                                <button
+                                    class="control"
+                                    type="button"
+                                    title=${label}
+                                    aria-label=${label}
+                                    aria-pressed=${String(placement.x === x && placement.y === y)}
+                                    ?disabled=${!this._loaded || !display}
+                                    @click=${() => this.savePlacement({ x, y })}
+                                >
+                                    ${symbol}
+                                </button>
+                            `
+                        )}
+                    </div>
+                </div>
+                <div class="size-row">
+                    <label class="form-label" for="answerWidth"
+                        >Width
+                        <input
+                            id="answerWidth"
+                            class="control"
+                            type="number"
+                            min=${ANSWER_PLACEMENT_LIMITS.minWidth}
+                            max=${ANSWER_PLACEMENT_LIMITS.maxWidth}
+                            step="10"
+                            .value=${String(placement.width)}
+                            ?disabled=${!this._loaded || !display}
+                            @change=${event => this.savePlacement({ width: Number(event.target.value) })}
+                        />
+                    </label>
+                    <label class="form-label" for="answerHeight"
+                        >Height
+                        <input
+                            id="answerHeight"
+                            class="control"
+                            type="number"
+                            min=${ANSWER_PLACEMENT_LIMITS.minHeight}
+                            max=${ANSWER_PLACEMENT_LIMITS.maxHeight}
+                            step="10"
+                            .value=${String(placement.height)}
+                            ?disabled=${!this._loaded || !display}
+                            @change=${event => this.savePlacement({ height: Number(event.target.value) })}
+                        />
+                    </label>
+                    <span class="form-help">Screen points · fitted to your display</span>
+                </div>
+                <div class="form-help">
+                    Position is saved for the next session. During a session, use Option + arrow keys on Mac or Alt + arrow keys on Windows to move
+                    the answer.
+                </div>
+                ${this._displayError ? html`<div class="save-error form-help" role="status">${this._displayError}</div>` : ''}
+            </section>
+        `;
+    }
+
     renderOpacitySlider(key, label, help) {
         const value = normalizeTestVisibility(this.preferences)[key];
         return html`
@@ -223,14 +484,42 @@ export class TestVisibilityView extends LitElement {
                             Hide waiting messages, status, navigation and input controls while the session is active. Only the answer remains.
                         </p>
                         <p class="form-help">
+                            During a session, clicks and scrolling pass through to the app underneath. Use shortcuts to control the answer; copying is
+                            available in History.
+                        </p>
+                        <p class="form-help">
                             Use ${modifier} + \\ to show or hide the app. Reopen these settings with ${modifier} + Shift + , (default shortcut), even
                             when the answer is invisible. Shortcuts can be changed in Settings.
                         </p>
                     </section>
+                    ${this.renderPlacement()}
                     <section class="surface form-row">
                         <div class="surface-title">Answer visibility</div>
                         ${this.renderOpacitySlider('answerTextOpacity', 'Answer text opacity', 'Changes answer text and formulas.')}
                         ${this.renderOpacitySlider('answerFrameOpacity', 'Answer frame opacity', 'Changes the answer background and border separately from the text.')}
+                        <div class="form-row">
+                            <label class="form-label" for="answerTextColor">Answer text color</label>
+                            <div class="color-row">
+                                <input
+                                    id="answerTextColor"
+                                    type="color"
+                                    .value=${prefs.answerTextColor || '#ffffff'}
+                                    ?disabled=${!this._loaded}
+                                    @input=${event => this.previewOpacity('answerTextColor', event.target.value)}
+                                    @change=${event => this.savePreference('answerTextColor', event.target.value)}
+                                />
+                                <span class="chip">${prefs.answerTextColor || 'Theme default'}</span>
+                                <button
+                                    type="button"
+                                    class="control compact-button"
+                                    ?disabled=${!this._loaded || !prefs.answerTextColor}
+                                    @click=${() => this.savePreference('answerTextColor', '')}
+                                >
+                                    Use theme color
+                                </button>
+                            </div>
+                            <div class="form-help">Changes live answer text and formulas. The preview below shows the selected color.</div>
+                        </div>
                     </section>
                     <section class="surface">
                         <label class="toggle-row" for="emphasizeAnswerLabels">
@@ -250,7 +539,7 @@ export class TestVisibilityView extends LitElement {
                         <div class="surface-subtitle">This sample does not make an AI request.</div>
                         <div
                             class="preview"
-                            style=${`--preview-text-opacity: ${prefs.answerTextOpacity / 100}; --preview-frame-opacity: ${prefs.answerFrameOpacity / 100};`}
+                            style=${`--preview-text-opacity: ${prefs.answerTextOpacity / 100}; --preview-frame-opacity: ${prefs.answerFrameOpacity / 100}; --preview-answer-color: ${prefs.answerTextColor || 'var(--text-primary)'};`}
                         >
                             <div class="preview-frame">
                                 ${prefs.blindMode ? '' : html`<div class="preview-status">Screen ready · Practice session</div>`}
@@ -258,7 +547,7 @@ export class TestVisibilityView extends LitElement {
                                     ${prefs.emphasizeAnswerLabels ? html`<strong>Question 7 · B</strong>` : 'Question 7 · B'}<br />
                                     Linear time: Θ(n)
                                 </div>
-                                ${prefs.blindMode ? '' : html`<div class="preview-status preview-controls">Previous · Next · Analyze Screen</div>`}
+                                ${prefs.blindMode ? '' : html`<div class="preview-status preview-controls">Keyboard shortcuts · Mouse passes through</div>`}
                             </div>
                         </div>
                     </section>

@@ -23,6 +23,13 @@ module.exports = async function checkAnswerVisibility(window) {
             const stylesLoaded = await new Promise(resolve => { const link = view.shadowRoot.querySelector('[data-response-math-styles]'); if(link.sheet) resolve(true); else { link.onload = () => resolve(true); link.onerror = () => resolve(false); } });
             const read = () => ({ text: getComputedStyle(view.shadowRoot.querySelector('#responseContainer')).opacity, frame: getComputedStyle(view.shadowRoot.querySelector('.answer-backplate')).opacity });
             const fullText = read();
+            const passiveContent = getComputedStyle(view).pointerEvents === 'none' && getComputedStyle(view.shadowRoot.querySelector('strong')).userSelect === 'none' && !view.shadowRoot.querySelector('button, input, textarea');
+            app.visibilityPreferences = { ...app.visibilityPreferences, answerTextColor: '#51c8ef' };
+            view = await wait();
+            const customColor = [view.shadowRoot.querySelector('strong'), view.shadowRoot.querySelector('.katex')].every(node => getComputedStyle(node).color === 'rgb(81, 200, 239)');
+            app.visibilityPreferences = { ...app.visibilityPreferences, answerTextColor: '' };
+            view = await wait();
+            const themeColorRestored = !view.style.getPropertyValue('--answer-text-color') && getComputedStyle(view.shadowRoot.querySelector('.katex')).color !== 'rgb(81, 200, 239)';
             app.visibilityPreferences = { ...app.visibilityPreferences, answerTextOpacity: 50, answerFrameOpacity: 35 };
             view = await wait(); const partial = read();
             app.visibilityPreferences = { ...app.visibilityPreferences, answerTextOpacity: 0, answerFrameOpacity: 0 };
@@ -43,10 +50,22 @@ module.exports = async function checkAnswerVisibility(window) {
             app.testReview = true;
             view = await wait();
             const reviewUnchanged = !app.hasAttribute('answer-visibility') && !!app.shadowRoot.querySelector('.live-bar') && getComputedStyle(view.shadowRoot.querySelector('#responseContainer')).opacity === '1' && !view.hasAttribute('blind-mode');
-            return { blank, transparentShell, formula, stylesLoaded, fullText, partial, zero, recovered, lightSettingsReadable, returned, reviewUnchanged };
+            return { blank, transparentShell, formula, stylesLoaded, passiveContent, customColor, themeColorRestored, fullText, partial, zero, recovered, lightSettingsReadable, returned, reviewUnchanged };
         } finally { Object.assign(app, original); await app.updateComplete; }
     })()`);
-    for (const key of ['blank', 'transparentShell', 'formula', 'stylesLoaded', 'recovered', 'lightSettingsReadable', 'returned', 'reviewUnchanged'])
+    for (const key of [
+        'blank',
+        'transparentShell',
+        'formula',
+        'stylesLoaded',
+        'passiveContent',
+        'customColor',
+        'themeColorRestored',
+        'recovered',
+        'lightSettingsReadable',
+        'returned',
+        'reviewUnchanged',
+    ])
         assert.equal(result[key], true, key);
     assert.deepEqual(result.fullText, { text: '1', frame: '0' });
     assert.deepEqual(result.partial, { text: '0.5', frame: '0.35' });

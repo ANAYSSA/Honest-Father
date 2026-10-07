@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ANAYSSA/Honest-Father/8732eb477a24aa01cc789ac0df77f20a94a19433/src/assets/logo.png" alt="Honest Father" width="160" height="160" />
+  <img src="https://raw.githubusercontent.com/CyberKotletochka/Honest-Father/8732eb477a24aa01cc789ac0df77f20a94a19433/src/assets/logo.png" alt="Honest Father" width="160" height="160" />
 </p>
 
 <h1 align="center">Honest Father</h1>
@@ -8,7 +8,7 @@ An open-source desktop AI assistant for mock interviews, exam preparation, and l
 
 ## Downloads
 
-Download packages from [Honest Father Releases](https://github.com/ANAYSSA/Honest-Father/releases/latest).
+Download packages from [Honest Father Releases](https://github.com/CyberKotletochka/Honest-Father/releases/latest).
 
 | Computer                                      | Download                                                           |
 | --------------------------------------------- | ------------------------------------------------------------------ |
@@ -20,6 +20,15 @@ For macOS, open the DMG and drag **Honest Father** to Applications. On Windows, 
 Requires macOS 13 or later, or 64-bit Windows 10/11.
 
 Published macOS builds use the same project signing certificate across versions, so updates can retain their privacy authorization. They are not Developer ID signed or notarized, so macOS may require approval under **System Settings → Privacy & Security**. Windows builds are unsigned and may show SmartScreen. Each platform includes a `SHA256SUMS.txt` file for verifying downloads. Linux packaging is outside the scope of this fork's release workflow.
+
+## What changed in 0.11.2
+
+- The active answer window passes mouse clicks and scrolling to the application underneath and cannot take keyboard focus. Use shortcuts to analyze, browse and scroll answers. Copying remains available in **History**.
+- Move the answer window with **Option + arrows** on Mac or **Alt + arrows** on Windows, even before the first answer or while hidden. Its position is saved. Customized shortcuts are preserved.
+- **Test Visibility → Answer position** lets you choose a monitor, position and size before starting, using a screen preview or nine placement buttons. Settings retain their own readable window size.
+- **Answer text color** applies to text and mathematical notation, with a button to restore the theme color. Text and frame opacity remain independent.
+- **Command + Shift + , / Ctrl + Shift + ,** restores interactive settings; **Return to session** restores the passive answer window. Review marks and History copying are preserved.
+- Updates and release links now point to **CyberKotletochka/Honest-Father**. The app branding and persistent macOS signing identity are unchanged.
 
 ## What changed in 0.11.1
 
@@ -129,12 +138,11 @@ All global shortcuts are configurable under **Customize → Keyboard Shortcuts**
 | ------------------------------------------ | --------------------- | ------------------ |
 | Analyze screenshot (also starts from Home) | `Command + Enter`     | `Ctrl + Enter`     |
 | Quit application                           | `Command + Shift + Q` | `Ctrl + Shift + Q` |
-| Move window                                | `Option + Arrow`      | `Ctrl + Arrow`     |
-| Toggle click-through                       | `Command + M`         | `Ctrl + M`         |
+| Move window                                | `Option + Arrow`      | `Alt + Arrow`      |
+| Toggle click-through outside a session     | `Command + M`         | `Ctrl + M`         |
 | Show/hide app window                       | `Command + \`         | `Ctrl + \`         |
 | Show/hide Review marks or notice           | `Command + Shift + \` | `Ctrl + Shift + \` |
 | Open Test Visibility settings              | `Command + Shift + ,` | `Ctrl + Shift + ,` |
-| Send a typed message                       | `Enter`               | `Enter`            |
 
 If another application or the OS already uses a shortcut, choose a different combination in settings.
 
